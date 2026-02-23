@@ -1,0 +1,97 @@
+import { getDb } from './db.js';
+import { appendToChain } from './hash-chain.js';
+
+export interface Event {
+  id: number;
+  session_id: string;
+  type: string;
+  timestamp: string;
+  data_json: string;
+  hash: string;
+  prev_hash: string | null;
+  created_at: string;
+}
+
+export function appendEvent(params: {
+  session_id: string;
+  type: string;
+  timestamp?: string;
+  data: Record<string, unknown>;
+}): Event {
+  const db = getDb();
+  const timestamp = params.timestamp ?? new Date().toISOString();
+  const dataJson = JSON.stringify(params.data);
+  const { hash, prevHash } = appendToChain(params.type, timestamp, dataJson);
+
+  const result = db.prepare(`
+    INSERT INTO events (session_id, type, timestamp, data_json, hash, prev_hash)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    params.session_id,
+    params.type,
+    timestamp,
+    dataJson,
+    hash,
+    prevHash,
+  );
+
+  return db.prepare(`SELECT * FROM events WHERE id = ?`).get(result.lastInsertRowid) as Event;
+}
+
+export function getEvents(params: {
+  session_id?: string;
+  type?: string;
+  since?: string;
+  search?: string;
+  limit?: number;
+}): Event[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const args: unknown[] = [];
+
+  if (params.session_id) {
+    conditions.push(`session_id = ?`);
+    args.push(params.session_id);
+  }
+
+  if (params.type) {
+    conditions.push(`type = ?`);
+    args.push(params.type);
+  }
+
+  if (params.since) {
+    conditions.push(`timestamp >= ?`);
+    args.push(params.since);
+  }
+
+  if (params.search) {
+    conditions.push(`data_json LIKE ?`);
+    args.push(`%${params.search}%`);
+  }
+
+  let query = `SELECT * FROM events`;
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(' AND ')}`;
+  }
+  query += ` ORDER BY id ASC`;
+
+  if (params.limit) {
+    query += ` LIMIT ?`;
+    args.push(params.limit);
+  }
+
+  return db.prepare(query).all(...args) as Event[];
+}
+
+export function getEventCountsByType(sessionId: string): Record<string, number> {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT type, COUNT(*) as count FROM events WHERE session_id = ? GROUP BY type`
+  ).all(sessionId) as Array<{ type: string; count: number }>;
+
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    counts[row.type] = row.count;
+  }
+  return counts;
+}
