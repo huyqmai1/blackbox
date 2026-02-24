@@ -73,14 +73,16 @@ export function getEvents(params: {
   if (conditions.length > 0) {
     query += ` WHERE ${conditions.join(' AND ')}`;
   }
-  query += ` ORDER BY id ASC`;
+  // Use DESC + LIMIT to get the most recent events, then reverse for chronological display
+  query += ` ORDER BY id DESC`;
 
   if (params.limit) {
     query += ` LIMIT ?`;
     args.push(params.limit);
   }
 
-  return db.prepare(query).all(...args) as Event[];
+  const rows = db.prepare(query).all(...args) as Event[];
+  return rows.reverse();
 }
 
 export function getEventCountsByType(sessionId: string): Record<string, number> {

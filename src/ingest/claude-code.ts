@@ -218,6 +218,19 @@ export function mapEntryToEvents(entry: ClaudeCodeEntry): MappedEvent[] {
     return events;
   }
 
+  // Skip noisy internal Claude Code event types
+  const SKIP_TYPES = new Set([
+    'progress',
+    'file-history-snapshot',
+    'queue-operation',
+    'system',
+    'lock_acquired',
+    'lock_released',
+  ]);
+  if (entry.type && SKIP_TYPES.has(entry.type)) {
+    return events;
+  }
+
   // Fallback: capture as a generic event
   if (entry.type) {
     events.push({

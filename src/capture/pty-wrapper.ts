@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createSession, endSession } from '../storage/sessions.js';
 import { appendEvent } from '../storage/events.js';
 
@@ -46,36 +49,44 @@ export async function execWithCapture(opts: ExecOptions): Promise<void> {
   });
 
   const startTime = Date.now();
-  let outputSize = 0;
-  const outputChunks: string[] = [];
+
+  // Use macOS/Linux `script` command to provide a real PTY to the child
+  // process while capturing output to a file. This is necessary because
+  // interactive tools like Claude Code require a real TTY.
+  const logDir = mkdtempSync(join(tmpdir(), 'blackbox-'));
+  const logFile = join(logDir, 'output.log');
 
   return new Promise<void>((resolve) => {
-    const userShell = process.env.SHELL || '/bin/sh';
-    const child = spawn(userShell, ['-c', commandStr], {
+    const isMac = process.platform === 'darwin';
+
+    // macOS: script -q <logfile> <shell> -c <cmd>
+    // Linux: script -q -c <cmd> <logfile>
+    const scriptArgs = isMac
+      ? ['-q', logFile, '/bin/sh', '-c', commandStr]
+      : ['-q', '-c', commandStr, logFile];
+
+    const child = spawn('script', scriptArgs, {
       cwd,
-      stdio: ['inherit', 'pipe', 'pipe'],
+      stdio: 'inherit',
       env: process.env,
-    });
-
-    child.stdout?.on('data', (data: Buffer) => {
-      const str = data.toString();
-      process.stdout.write(str);
-      outputSize += str.length;
-      outputChunks.push(str);
-    });
-
-    child.stderr?.on('data', (data: Buffer) => {
-      const str = data.toString();
-      process.stderr.write(str);
-      outputSize += str.length;
-      outputChunks.push(str);
     });
 
     child.on('close', (exitCode) => {
       const duration = Date.now() - startTime;
 
-      // Store raw output as an event (truncated for very large outputs)
-      const rawOutput = outputChunks.join('');
+      // Read captured output from the log file
+      let rawOutput = '';
+      let outputSize = 0;
+      try {
+        rawOutput = readFileSync(logFile, 'utf-8');
+        outputSize = rawOutput.length;
+      } catch {
+        // Log file may not exist if process was killed immediately
+      }
+
+      // Clean up temp file
+      try { unlinkSync(logFile); } catch { /* ignore */ }
+
       const truncatedOutput = rawOutput.length > 100_000
         ? rawOutput.slice(0, 100_000) + '\n... [truncated]'
         : rawOutput;
@@ -86,19 +97,31 @@ export async function execWithCapture(opts: ExecOptions): Promise<void> {
         data: { output: truncatedOutput, output_size: outputSize },
       });
 
-      // Record session end
-      appendEvent({
-        session_id: session.id,
-        type: 'session_end',
-        data: {
-          exit_code: exitCode,
-          duration_ms: duration,
-          output_size: outputSize,
-        },
-      });
+      // If the wrapped command was Claude Code, auto-ingest its session logs
+      if (agent === 'claude-code') {
+        appendEvent({
+          session_id: session.id,
+          type: 'session_end',
+          data: {
+            exit_code: exitCode,
+            duration_ms: duration,
+            output_size: outputSize,
+            note: 'Claude Code session — run `blackbox ingest --all` to import detailed logs',
+          },
+        });
+      } else {
+        appendEvent({
+          session_id: session.id,
+          type: 'session_end',
+          data: {
+            exit_code: exitCode,
+            duration_ms: duration,
+            output_size: outputSize,
+          },
+        });
+      }
 
       endSession(session.id);
-
       resolve();
     });
 
@@ -109,7 +132,6 @@ export async function execWithCapture(opts: ExecOptions): Promise<void> {
         data: {
           error: err.message,
           duration_ms: Date.now() - startTime,
-          output_size: outputSize,
         },
       });
 
