@@ -15,9 +15,10 @@ import {
 } from '../storage/annotations.js';
 import { getFileChanges } from '../capture/file-tracker.js';
 import { getDb } from '../storage/db.js';
-import { discoverSessions, parseSession, mapEntryToEvents } from '../ingest/claude-code.js';
+import { discoverSessions, parseSession, parseSessionFile, mapEntryToEvents, isEnrichmentSession } from '../ingest/claude-code.js';
 import { enrichSessionTitle } from '../analysis/title-generator.js';
 import { autoAnnotateSession } from '../analysis/auto-annotate.js';
+import { aiEnrichAll, applyAiEnrichment, needsEnrichment, getSessionLastHash, type EnrichAllOptions } from '../analysis/ai-enrich.js';
 
 // Shared project name cleaning
 function cleanProjectName(metadataJson: string | null, cwd: string | null): string {
@@ -84,7 +85,16 @@ export function handleApiEvents(searchParams: URLSearchParams): unknown[] {
   const limit = limitStr ? parseInt(limitStr, 10) : 100;
 
   const results = getEvents({ search, type, limit: limit || undefined });
-  return results;
+  // Enrich with session title for search results display
+  const sessionCache: Record<string, string | null> = {};
+  return results.map((ev: Record<string, unknown>) => {
+    const sid = ev.session_id as string;
+    if (!(sid in sessionCache)) {
+      const s = getSession(sid);
+      sessionCache[sid] = s?.title ?? null;
+    }
+    return { ...ev, session_title: sessionCache[sid] };
+  });
 }
 
 export function handleApiCreateAnnotation(body: {
@@ -228,6 +238,7 @@ export function handleApiAnnotations(searchParams: URLSearchParams): unknown[] {
     return {
       ...a,
       session_started_at: session?.started_at ?? null,
+      session_title: session?.title ?? null,
       project_name: session ? cleanProjectName(session.metadata_json, session.cwd) : '',
     };
   });
@@ -246,6 +257,15 @@ function runIngest(): { imported: number; skipped: number; updated: number } {
   const db = getDb();
 
   for (const disc of discovered) {
+    // Skip sessions created by blackbox enrichment (claude -p subprocess calls)
+    if (!getSessionBySourceId(disc.sessionId)) {
+      const entries = parseSessionFile(disc.sessionFile);
+      if (isEnrichmentSession(entries)) {
+        skipped++;
+        continue;
+      }
+    }
+
     const existing = getSessionBySourceId(disc.sessionId);
 
     if (existing) {
@@ -417,6 +437,75 @@ export function handleAutoIngest(body: { enabled?: boolean; interval_minutes?: n
   }
 
   return { enabled: false };
+}
+
+// --- Enrichment API ---
+
+let enrichmentRunning = false;
+let enrichmentProgress: { done: number; total: number; errors: number } | null = null;
+
+export function handleEnrichmentStatus(): unknown {
+  const db = getDb();
+
+  const total = (db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number }).count;
+  const enriched = (db.prepare('SELECT COUNT(*) as count FROM sessions WHERE enriched_at IS NOT NULL').get() as { count: number }).count;
+
+  // Count sessions that need re-enrichment (hash mismatch)
+  const sessions = db.prepare(
+    'SELECT id, enriched_at, enriched_hash FROM sessions'
+  ).all() as Array<{ id: string; enriched_at: string | null; enriched_hash: string | null }>;
+  const pending = sessions.filter(s => needsEnrichment(s, false)).length;
+
+  return {
+    total,
+    enriched,
+    pending,
+    running: enrichmentRunning,
+    progress: enrichmentProgress,
+  };
+}
+
+export async function handleEnrichAll(body: {
+  force?: boolean;
+  concurrency?: number;
+  batchSize?: number;
+}): Promise<unknown> {
+  if (enrichmentRunning) {
+    return { error: 'Enrichment already running', progress: enrichmentProgress };
+  }
+
+  enrichmentRunning = true;
+  enrichmentProgress = { done: 0, total: 0, errors: 0 };
+
+  // Run asynchronously — don't block the response
+  const startTime = Date.now();
+  aiEnrichAll({
+    force: body.force,
+    concurrency: body.concurrency || 3,
+    batchSize: body.batchSize || 10,
+    onProgress: (done, total, errors) => {
+      enrichmentProgress = { done, total, errors };
+    },
+  }).then((result) => {
+    enrichmentRunning = false;
+    enrichmentProgress = { done: result.enriched + result.errors, total: result.enriched + result.errors + result.skipped, errors: result.errors };
+  }).catch(() => {
+    enrichmentRunning = false;
+  });
+
+  return { started: true, progress: enrichmentProgress };
+}
+
+export function handleEnrichSession(sessionId: string): unknown {
+  try {
+    const result = applyAiEnrichment(sessionId);
+    return { success: true, ...result };
+  } catch (err) {
+    // Fall back to heuristic
+    enrichSessionTitle(sessionId);
+    autoAnnotateSession(sessionId);
+    return { success: false, fallback: true, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 // --- Phase 9: Plans API ---

@@ -205,6 +205,13 @@ tr:hover td { background: var(--surface-hover); }
 }
 .timeline-item:hover { border-color: #484f58; }
 .timeline-item.expanded { border-color: var(--accent); }
+.timeline-item.highlight {
+  animation: highlight-pulse 2s ease-out;
+}
+@keyframes highlight-pulse {
+  0% { border-color: var(--accent); box-shadow: 0 0 12px rgba(88,166,255,0.4); }
+  100% { border-color: var(--border); box-shadow: none; }
+}
 .timeline-header {
   display: flex;
   align-items: center;
@@ -480,7 +487,10 @@ tr:hover td { background: var(--surface-hover); }
   border-radius: var(--radius);
   padding: 12px 16px;
   margin-bottom: 8px;
+  transition: border-color 0.15s;
 }
+.search-result.clickable { cursor: pointer; }
+.search-result.clickable:hover { border-color: #484f58; }
 .search-result .search-meta {
   font-size: 12px;
   color: var(--text-muted);
@@ -810,6 +820,8 @@ export const JS = `
 
     // Ingest bar
     initIngestBar(function() { load(); });
+    // Enrichment bar
+    initEnrichmentBar(function() { load(); });
 
     function renderTable() {
       var filterProject = document.getElementById('filter-project').value;
@@ -1025,6 +1037,85 @@ export const JS = `
     refresh();
   }
 
+  // ===== Enrichment Bar (Sessions Page) =====
+
+  function initEnrichmentBar(onEnrich) {
+    var bar = document.getElementById('enrichment-bar');
+    if (!bar) return;
+
+    var pollTimer = null;
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    async function refresh() {
+      try {
+        var st = await apiFetch('/api/enrichment/status');
+        var html = '<span class="ingest-status">';
+        if (st.running) {
+          var prog = st.progress || { done: 0, total: 0, errors: 0 };
+          html += '<span style="color:var(--warning)">AI enrichment running... ' + prog.done + '/' + prog.total;
+          if (prog.errors > 0) html += ' (' + prog.errors + ' errors)';
+          html += '</span>';
+          html += '</span>';
+          html += '<span class="enrichment-stats" style="color:var(--text-muted);font-size:12px">' + st.enriched + '/' + st.total + ' enriched</span>';
+          bar.innerHTML = html;
+          if (!pollTimer) pollTimer = setInterval(function() { refresh(); }, 3000);
+          return;
+        }
+        stopPolling();
+        if (st.pending > 0) {
+          html += '<span style="color:var(--accent)">' + st.pending + ' session(s) need AI enrichment</span>';
+        } else {
+          html += '<span style="color:var(--success)">All ' + st.enriched + ' sessions AI-enriched</span>';
+        }
+        html += '</span>';
+        html += '<span style="color:var(--text-muted);font-size:12px;margin-left:8px">' + st.enriched + '/' + st.total + ' enriched</span>';
+        if (st.pending > 0) {
+          html += '<button class="btn btn-primary" id="enrich-all-btn" style="margin-left:auto">Enrich All</button>';
+          html += '<button class="btn" id="enrich-force-btn" style="margin-left:4px">Force All</button>';
+        } else {
+          html += '<button class="btn" id="enrich-force-btn" style="margin-left:auto">Re-enrich All</button>';
+        }
+        bar.innerHTML = html;
+
+        var enrichBtn = document.getElementById('enrich-all-btn');
+        if (enrichBtn) {
+          enrichBtn.addEventListener('click', async function() {
+            enrichBtn.textContent = 'Starting...';
+            enrichBtn.disabled = true;
+            try {
+              await fetch('/api/enrichment/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+              });
+              refresh();
+            } catch(e) { alert('Error: ' + e.message); }
+          });
+        }
+
+        var forceBtn = document.getElementById('enrich-force-btn');
+        if (forceBtn) {
+          forceBtn.addEventListener('click', async function() {
+            forceBtn.textContent = 'Starting...';
+            forceBtn.disabled = true;
+            try {
+              await fetch('/api/enrichment/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ force: true }),
+              });
+              refresh();
+            } catch(e) { alert('Error: ' + e.message); }
+          });
+        }
+      } catch(e) { bar.innerHTML = ''; }
+    }
+    refresh();
+  }
+
   // ===== Page: Session Detail =====
 
   function initSessionDetailPage() {
@@ -1092,6 +1183,45 @@ export const JS = `
         }
       }
 
+      // Enrichment info
+      var enrichInfo = document.getElementById('enrichment-info');
+      if (enrichInfo) {
+        var ehtml = '<dl>';
+        if (session.enriched_at) {
+          ehtml += '<dt>Last enriched</dt><dd>' + formatDate(session.enriched_at) + '</dd>';
+          ehtml += '<dt>Status</dt><dd style="color:var(--success)">Enriched</dd>';
+        } else {
+          ehtml += '<dt>Status</dt><dd style="color:var(--text-muted)">Not enriched</dd>';
+        }
+        ehtml += '</dl>';
+        enrichInfo.innerHTML = ehtml;
+      }
+
+      var enrichBtn = document.getElementById('enrich-session-btn');
+      if (enrichBtn) {
+        var newBtn = enrichBtn.cloneNode(true);
+        enrichBtn.parentNode.replaceChild(newBtn, enrichBtn);
+        newBtn.textContent = session.enriched_at ? 'Re-enrich with AI' : 'Enrich with AI';
+        newBtn.disabled = false;
+        newBtn.addEventListener('click', async function() {
+          newBtn.textContent = 'Enriching...';
+          newBtn.disabled = true;
+          try {
+            var r = await fetch('/api/enrichment/session/' + sessionId, { method: 'POST' }).then(function(r) { return r.json(); });
+            if (r.success) {
+              newBtn.textContent = 'Done!';
+              setTimeout(function() { load(); }, 500);
+            } else {
+              newBtn.textContent = r.fallback ? 'Used heuristic fallback' : 'Failed';
+              setTimeout(function() { load(); }, 1000);
+            }
+          } catch(e) {
+            newBtn.textContent = 'Error';
+            alert('Enrichment error: ' + e.message);
+          }
+        });
+      }
+
       // Timeline: separate event-level vs session-level annotations
       var eventAnnotations = {};
       var sessionAnnotations = [];
@@ -1157,7 +1287,7 @@ export const JS = `
 
           var itemClass = 'timeline-item';
           if (isPlanMode) itemClass += ' plan-mode';
-          html += '<div class="' + itemClass + '" data-idx="' + i + '" data-event-id="' + ev.id + '">';
+          html += '<div class="' + itemClass + '" id="event-' + ev.id + '" data-idx="' + i + '" data-event-id="' + ev.id + '">';
           html += '<div class="timeline-header">';
           html += '<span class="time">' + formatDateShort(ev.timestamp) + '</span>';
           html += '<span class="badge badge-' + escapeHtml(badgeType) + '">' + escapeHtml(badgeType) + '</span>';
@@ -1193,6 +1323,18 @@ export const JS = `
         }
       });
       timeline.innerHTML = html;
+
+      // Scroll to hash target (e.g. #event-123)
+      if (location.hash) {
+        var hashTarget = document.getElementById(location.hash.substring(1));
+        if (hashTarget) {
+          setTimeout(function() {
+            hashTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            hashTarget.classList.add('expanded');
+            hashTarget.classList.add('highlight');
+          }, 100);
+        }
+      }
 
       // Toggle expand (but not on annotate button or inline form)
       timeline.querySelectorAll('.timeline-item:not(.annotation)').forEach(function(el) {
@@ -1284,10 +1426,12 @@ export const JS = `
         if (!events.length) { results.innerHTML = '<div class="empty">No events found matching "' + escapeHtml(q) + '".</div>'; return; }
         var html = '';
         events.forEach(function(ev) {
-          html += '<div class="search-result">';
+          var evLink = '/session/' + ev.session_id + (ev.id ? '#event-' + ev.id : '');
+          html += '<div class="search-result clickable" onclick="location.href=\\'' + evLink + '\\'">';
           html += '<div class="search-meta">';
           html += '<span class="badge badge-' + escapeHtml(ev.type) + '">' + escapeHtml(ev.type) + '</span> ';
-          html += '<a href="/session/' + ev.session_id + '">' + escapeHtml(ev.session_id.substring(0,8)) + '</a>';
+          var evLabel = ev.session_title ? truncate(ev.session_title, 40) : ev.session_id.substring(0,8);
+          html += '<a href="' + evLink + '" onclick="event.stopPropagation()">' + escapeHtml(evLabel) + '</a>';
           html += ' &middot; ' + formatDate(ev.timestamp);
           html += '</div>';
           html += '<div class="search-content">' + escapeHtml(extractSummary(ev)) + '</div>';
@@ -1428,10 +1572,14 @@ export const JS = `
         if (!anns.length) { container.innerHTML = '<div class="empty">No annotations found.</div>'; return; }
         var html = '';
         anns.forEach(function(a) {
-          html += '<div class="search-result">';
+          var annLink = a.session_id ? '/session/' + a.session_id + (a.event_id ? '#event-' + a.event_id : '') : '';
+          html += '<div class="search-result' + (annLink ? ' clickable' : '') + '"' + (annLink ? ' onclick="location.href=\\'' + annLink + '\\'"' : '') + '>';
           html += '<div class="search-meta">';
           html += '<span class="badge badge-' + escapeHtml(a.type) + '">' + escapeHtml(a.type) + '</span> ';
-          if (a.session_id) html += '<a href="/session/' + a.session_id + '">' + escapeHtml(a.session_id.substring(0,8)) + '</a>';
+          if (a.session_id) {
+            var annLabel = a.session_title ? truncate(a.session_title, 40) : a.session_id.substring(0,8);
+            html += '<a href="' + annLink + '" onclick="event.stopPropagation()">' + escapeHtml(annLabel) + '</a>';
+          }
           if (a.project_name) html += ' &middot; ' + escapeHtml(a.project_name);
           html += ' &middot; ' + formatDate(a.timestamp);
           if (a.event_id) html += ' &middot; <span style="color:var(--text-muted)">event #' + a.event_id + '</span>';

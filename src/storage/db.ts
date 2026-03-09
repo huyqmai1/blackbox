@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at TEXT NOT NULL,
   ended_at TEXT,
   metadata_json TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  enriched_at TEXT,
+  enriched_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -103,6 +105,8 @@ function runAlterMigrations(db: Database.Database): void {
   const migrations = [
     `ALTER TABLE sessions ADD COLUMN updated_at TEXT`,
     `ALTER TABLE sessions ADD COLUMN title TEXT`,
+    `ALTER TABLE sessions ADD COLUMN enriched_at TEXT`,
+    `ALTER TABLE sessions ADD COLUMN enriched_hash TEXT`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

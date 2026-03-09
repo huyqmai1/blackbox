@@ -38,6 +38,7 @@ export function sessionsListPage(): string {
       <p>All recorded AI agent sessions</p>
     </div>
     <div id="ingest-bar" class="ingest-bar"></div>
+    <div id="enrichment-bar" class="ingest-bar"></div>
     <form id="sessions-filter" class="filters">
       <input type="date" id="filter-since" placeholder="Since date">
       <select id="filter-project"><option value="">All projects</option></select>
@@ -77,6 +78,11 @@ export function sessionDetailPage(sessionId: string): string {
           <div class="sidebar-card">
             <h3>File Changes</h3>
             <div id="files-list"><div class="loading">Loading...</div></div>
+          </div>
+          <div class="sidebar-card">
+            <h3>AI Enrichment</h3>
+            <div id="enrichment-info"><div class="loading">Loading...</div></div>
+            <button id="enrich-session-btn" class="btn btn-primary" style="width:100%;margin-top:8px">Enrich with AI</button>
           </div>
           <div class="sidebar-card">
             <h3>Add Annotation</h3>

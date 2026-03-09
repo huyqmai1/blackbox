@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at TEXT,
   metadata_json TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT
+  updated_at TEXT,
+  enriched_at TEXT,
+  enriched_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (

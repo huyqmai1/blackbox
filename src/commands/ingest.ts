@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { discoverSessions, parseSession, mapEntryToEvents } from '../ingest/claude-code.js';
+import { discoverSessions, parseSession, parseSessionFile, mapEntryToEvents, isEnrichmentSession } from '../ingest/claude-code.js';
 import { createSession, sessionExistsBySourceId } from '../storage/sessions.js';
 import { appendEvent } from '../storage/events.js';
 
@@ -54,6 +54,13 @@ export const ingestCommand = new Command('ingest')
     for (const disc of toImport) {
       // Check for duplicates
       if (sessionExistsBySourceId(disc.sessionId)) {
+        skipped++;
+        continue;
+      }
+
+      // Skip sessions created by blackbox enrichment (claude -p subprocess calls)
+      const rawEntries = parseSessionFile(disc.sessionFile);
+      if (isEnrichmentSession(rawEntries)) {
         skipped++;
         continue;
       }

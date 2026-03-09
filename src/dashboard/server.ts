@@ -24,6 +24,9 @@ import {
   handleAutoIngest,
   handleApiPlans,
   handleApiPlan,
+  handleEnrichmentStatus,
+  handleEnrichAll,
+  handleEnrichSession,
 } from './api.js';
 
 function sendJson(res: ServerResponse, data: unknown, status = 200): void {
@@ -127,6 +130,24 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const body = JSON.parse(await readBody(req));
         sendJson(res, handleAutoIngest(body));
         return;
+      }
+
+      // Enrichment routes
+      if (method === 'GET' && pathname === '/api/enrichment/status') {
+        sendJson(res, handleEnrichmentStatus());
+        return;
+      }
+      if (method === 'POST' && pathname === '/api/enrichment/run') {
+        const body = JSON.parse(await readBody(req));
+        sendJson(res, await handleEnrichAll(body));
+        return;
+      }
+      {
+        const enrichParams = matchRoute(pathname, '/api/enrichment/session/:id');
+        if (method === 'POST' && enrichParams) {
+          sendJson(res, handleEnrichSession(enrichParams.id));
+          return;
+        }
       }
 
       // Parameterized API routes

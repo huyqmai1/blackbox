@@ -14,6 +14,8 @@ export interface Session {
   created_at: string;
   updated_at: string | null;
   title: string | null;
+  enriched_at: string | null;
+  enriched_hash: string | null;
 }
 
 export interface SessionWithStats extends Session {

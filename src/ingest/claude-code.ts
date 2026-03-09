@@ -67,6 +67,33 @@ export function discoverSessions(since?: string): Array<{ projectSlug: string; s
   return results.sort((a, b) => a.mtime.getTime() - b.mtime.getTime());
 }
 
+/**
+ * Detect sessions spawned by blackbox enrichment (claude -p calls).
+ * These are single-turn prompt-mode sessions whose first user message
+ * contains our batch enrichment prompt signature.
+ */
+export function isEnrichmentSession(entries: ClaudeCodeEntry[]): boolean {
+  // Look for the telltale prompt signatures in user messages
+  const enrichmentSignatures = [
+    'You are analyzing AI coding session logs. For each session below',
+    'You are analyzing an AI coding assistant session log. Based on the session data below, return ONLY valid JSON',
+  ];
+
+  for (const entry of entries) {
+    if (entry.type === 'user' || entry.message?.role === 'user') {
+      const content = typeof entry.message?.content === 'string'
+        ? entry.message.content
+        : Array.isArray(entry.message?.content)
+          ? entry.message!.content.filter((b: { type?: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('')
+          : '';
+      for (const sig of enrichmentSignatures) {
+        if (content.includes(sig)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function parseSessionFile(filePath: string): ClaudeCodeEntry[] {
   const content = readFileSync(filePath, 'utf-8');
   const lines = content.split('\n').filter(l => l.trim());
