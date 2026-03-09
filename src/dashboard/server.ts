@@ -27,6 +27,7 @@ import {
   handleEnrichmentStatus,
   handleEnrichAll,
   handleEnrichSession,
+  handleSetApiKey,
 } from './api.js';
 
 function sendJson(res: ServerResponse, data: unknown, status = 200): void {
@@ -142,10 +143,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         sendJson(res, await handleEnrichAll(body));
         return;
       }
+      if (method === 'POST' && pathname === '/api/enrichment/api-key') {
+        const body = JSON.parse(await readBody(req));
+        sendJson(res, handleSetApiKey(body));
+        return;
+      }
       {
         const enrichParams = matchRoute(pathname, '/api/enrichment/session/:id');
         if (method === 'POST' && enrichParams) {
-          sendJson(res, handleEnrichSession(enrichParams.id));
+          sendJson(res, await handleEnrichSession(enrichParams.id));
           return;
         }
       }

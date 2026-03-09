@@ -245,6 +245,12 @@ tr:hover td { background: var(--surface-hover); }
 .timeline-item.annotation {
   border-left: 3px solid var(--accent);
   background: rgba(88,166,255,0.04);
+  overflow: hidden;
+}
+.timeline-item.annotation .summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .timeline-item.annotation.risk_flag { border-left-color: var(--danger); }
 .timeline-item.annotation.decision_note { border-left-color: var(--accent); }
@@ -277,7 +283,6 @@ tr:hover td { background: var(--surface-hover); }
 
 /* Event-level annotation button */
 .timeline-header .btn-annotate {
-  display: none;
   padding: 2px 8px;
   font-size: 11px;
   background: transparent;
@@ -286,8 +291,10 @@ tr:hover td { background: var(--surface-hover); }
   border-radius: var(--radius);
   cursor: pointer;
   white-space: nowrap;
+  visibility: hidden;
+  flex-shrink: 0;
 }
-.timeline-item:hover .btn-annotate { display: inline-flex; }
+.timeline-item:hover .btn-annotate { visibility: visible; }
 .btn-annotate:hover { background: var(--surface-hover); color: var(--text); }
 
 /* Inline annotation form */
@@ -326,6 +333,8 @@ tr:hover td { background: var(--surface-hover); }
   font-size: 12px;
   background: rgba(88,166,255,0.04);
   border-radius: var(--radius);
+  overflow: hidden;
+  word-wrap: break-word;
 }
 .event-annotation.risk_flag { border-left: 2px solid var(--danger); }
 .event-annotation.decision_note { border-left: 2px solid var(--accent); }
@@ -1003,13 +1012,22 @@ export const JS = `
         bar.innerHTML = html;
 
         document.getElementById('sync-now-btn').addEventListener('click', async function() {
-          this.textContent = 'Syncing...';
-          this.disabled = true;
+          var btn = this;
+          btn.textContent = 'Syncing...';
+          btn.disabled = true;
           try {
             var r = await fetch('/api/ingest', { method: 'POST' }).then(function(r){return r.json()});
-            refresh();
-            if (onIngest) onIngest();
-          } catch(e) { alert('Ingest error: ' + e.message); }
+            var parts = [];
+            if (r.imported > 0) parts.push(r.imported + ' imported');
+            if (r.updated > 0) parts.push(r.updated + ' updated');
+            if (parts.length === 0) parts.push('Already up to date');
+            btn.textContent = parts.join(', ');
+            btn.style.minWidth = btn.offsetWidth + 'px';
+            setTimeout(function() { refresh(); if (onIngest) onIngest(); }, 1500);
+          } catch(e) {
+            btn.textContent = 'Error!';
+            setTimeout(function() { refresh(); }, 2000);
+          }
         });
 
         document.getElementById('auto-ingest-check').addEventListener('change', function() {
@@ -1053,6 +1071,36 @@ export const JS = `
       try {
         var st = await apiFetch('/api/enrichment/status');
         var html = '<span class="ingest-status">';
+
+        if (!st.has_api_key) {
+          html += '<span style="color:var(--warning)">No API key configured</span></span>';
+          html += '<input type="password" id="api-key-input" placeholder="sk-ant-..." style="margin-left:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius);font-size:12px;width:260px">';
+          html += '<button class="btn btn-primary" id="save-api-key-btn" style="margin-left:4px">Save Key</button>';
+          bar.innerHTML = html;
+
+          var saveBtn = document.getElementById('save-api-key-btn');
+          if (saveBtn) {
+            saveBtn.addEventListener('click', async function() {
+              var input = document.getElementById('api-key-input');
+              var key = input ? input.value.trim() : '';
+              if (!key) return;
+              saveBtn.textContent = 'Saving...';
+              saveBtn.disabled = true;
+              try {
+                var r = await fetch('/api/enrichment/api-key', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ api_key: key }),
+                });
+                var res = await r.json();
+                if (res.error) { alert(res.error); saveBtn.textContent = 'Save Key'; saveBtn.disabled = false; return; }
+                refresh();
+              } catch(e) { alert('Error: ' + e.message); saveBtn.textContent = 'Save Key'; saveBtn.disabled = false; }
+            });
+          }
+          return;
+        }
+
         if (st.running) {
           var prog = st.progress || { done: 0, total: 0, errors: 0 };
           html += '<span style="color:var(--warning)">AI enrichment running... ' + prog.done + '/' + prog.total;
@@ -1065,7 +1113,10 @@ export const JS = `
           return;
         }
         stopPolling();
-        if (st.pending > 0) {
+
+        if (st.last_error) {
+          html += '<span style="color:var(--danger)">Error: ' + st.last_error + '</span>';
+        } else if (st.pending > 0) {
           html += '<span style="color:var(--accent)">' + st.pending + ' session(s) need AI enrichment</span>';
         } else {
           html += '<span style="color:var(--success)">All ' + st.enriched + ' sessions AI-enriched</span>';
@@ -1212,8 +1263,9 @@ export const JS = `
               newBtn.textContent = 'Done!';
               setTimeout(function() { load(); }, 500);
             } else {
-              newBtn.textContent = r.fallback ? 'Used heuristic fallback' : 'Failed';
-              setTimeout(function() { load(); }, 1000);
+              newBtn.textContent = r.fallback ? 'Fallback: ' + (r.error || 'unknown error') : 'Failed';
+              newBtn.style.fontSize = '11px';
+              setTimeout(function() { load(); }, 3000);
             }
           } catch(e) {
             newBtn.textContent = 'Error';

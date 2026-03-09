@@ -37,7 +37,7 @@ export const enrichCommand = new Command('enrich')
       if (options.ai) {
         console.log(chalk.dim(`AI enriching session ${sessionId.slice(0, 8)}...`));
         try {
-          const result = applyAiEnrichment(sessionId);
+          const result = await applyAiEnrichment(sessionId);
           console.log(`  ${chalk.green('Title:')} ${result.title}`);
           console.log(`  ${chalk.green('Annotations:')} ${result.annotations}`);
         } catch (err) {

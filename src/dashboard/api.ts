@@ -19,6 +19,7 @@ import { discoverSessions, parseSession, parseSessionFile, mapEntryToEvents, isE
 import { enrichSessionTitle } from '../analysis/title-generator.js';
 import { autoAnnotateSession } from '../analysis/auto-annotate.js';
 import { aiEnrichAll, applyAiEnrichment, needsEnrichment, getSessionLastHash, type EnrichAllOptions } from '../analysis/ai-enrich.js';
+import { getApiKey, setConfig } from '../utils/config.js';
 
 // Shared project name cleaning
 function cleanProjectName(metadataJson: string | null, cwd: string | null): string {
@@ -279,9 +280,10 @@ function runIngest(): { imported: number; skipped: number; updated: number } {
         continue;
       }
 
-      // Re-import: delete old events and file_changes, then re-parse
-      db.prepare('DELETE FROM events WHERE session_id = ?').run(existing.id);
+      // Re-import: delete old annotations, events, and file_changes, then re-parse
+      db.prepare('DELETE FROM annotations WHERE session_id = ?').run(existing.id);
       db.prepare('DELETE FROM file_changes WHERE session_id = ?').run(existing.id);
+      db.prepare('DELETE FROM events WHERE session_id = ?').run(existing.id);
 
       const parsed = parseSession(disc.projectSlug, disc.sessionFile, disc.sessionId);
 
@@ -401,13 +403,22 @@ function runIngest(): { imported: number; skipped: number; updated: number } {
 export function handleIngestStatus(): unknown {
   const discovered = discoverSessions();
   let alreadyImported = 0;
+  let filtered = 0;
   for (const disc of discovered) {
-    if (sessionExistsBySourceId(disc.sessionId)) alreadyImported++;
+    if (sessionExistsBySourceId(disc.sessionId)) {
+      alreadyImported++;
+    } else {
+      // Check if this would be skipped by the enrichment filter
+      try {
+        const entries = parseSessionFile(disc.sessionFile);
+        if (isEnrichmentSession(entries)) filtered++;
+      } catch { filtered++; }
+    }
   }
   return {
     total_discovered: discovered.length,
     already_imported: alreadyImported,
-    pending: discovered.length - alreadyImported,
+    pending: discovered.length - alreadyImported - filtered,
     auto_ingest: autoIngestTimer !== null,
     auto_ingest_interval_min: autoIngestIntervalMin,
   };
@@ -443,6 +454,7 @@ export function handleAutoIngest(body: { enabled?: boolean; interval_minutes?: n
 
 let enrichmentRunning = false;
 let enrichmentProgress: { done: number; total: number; errors: number } | null = null;
+let enrichmentLastError: string | null = null;
 
 export function handleEnrichmentStatus(): unknown {
   const db = getDb();
@@ -462,6 +474,8 @@ export function handleEnrichmentStatus(): unknown {
     pending,
     running: enrichmentRunning,
     progress: enrichmentProgress,
+    has_api_key: !!getApiKey(),
+    last_error: enrichmentLastError,
   };
 }
 
@@ -476,6 +490,7 @@ export async function handleEnrichAll(body: {
 
   enrichmentRunning = true;
   enrichmentProgress = { done: 0, total: 0, errors: 0 };
+  enrichmentLastError = null;
 
   // Run asynchronously — don't block the response
   const startTime = Date.now();
@@ -489,16 +504,17 @@ export async function handleEnrichAll(body: {
   }).then((result) => {
     enrichmentRunning = false;
     enrichmentProgress = { done: result.enriched + result.errors, total: result.enriched + result.errors + result.skipped, errors: result.errors };
-  }).catch(() => {
+  }).catch((err) => {
     enrichmentRunning = false;
+    enrichmentLastError = err instanceof Error ? err.message : String(err);
   });
 
   return { started: true, progress: enrichmentProgress };
 }
 
-export function handleEnrichSession(sessionId: string): unknown {
+export async function handleEnrichSession(sessionId: string): Promise<unknown> {
   try {
-    const result = applyAiEnrichment(sessionId);
+    const result = await applyAiEnrichment(sessionId);
     return { success: true, ...result };
   } catch (err) {
     // Fall back to heuristic
@@ -506,6 +522,15 @@ export function handleEnrichSession(sessionId: string): unknown {
     autoAnnotateSession(sessionId);
     return { success: false, fallback: true, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export function handleSetApiKey(body: { api_key?: string }): unknown {
+  const key = body.api_key?.trim();
+  if (!key || key.length < 10) {
+    throw new Error('Invalid API key.');
+  }
+  setConfig({ anthropic_api_key: key });
+  return { success: true };
 }
 
 // --- Phase 9: Plans API ---
