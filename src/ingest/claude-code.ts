@@ -86,8 +86,10 @@ export function parseSessionFile(filePath: string): ClaudeCodeEntry[] {
 export function parseSession(projectSlug: string, filePath: string, sessionId: string): ParsedSession {
   const entries = parseSessionFile(filePath);
 
-  let startedAt = new Date().toISOString();
-  let endedAt = startedAt;
+  // Use file mtime as fallback instead of current time
+  const fileMtime = statSync(filePath).mtime.toISOString();
+  let startedAt = fileMtime;
+  let endedAt = fileMtime;
   let cwd: string | undefined;
   let model: string | undefined;
 

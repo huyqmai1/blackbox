@@ -65,8 +65,12 @@ export function getEvents(params: {
   }
 
   if (params.search) {
-    conditions.push(`data_json LIKE ?`);
-    args.push(`%${params.search}%`);
+    // Split search into words — all words must match (AND)
+    const words = params.search.trim().split(/\s+/).filter(w => w.length > 0);
+    for (const w of words) {
+      conditions.push(`data_json LIKE ?`);
+      args.push(`%${w}%`);
+    }
   }
 
   let query = `SELECT * FROM events`;

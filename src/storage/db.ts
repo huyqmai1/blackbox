@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const BLACKBOX_DIR = join(homedir(), '.blackbox');
+const BLACKBOX_DIR = process.env.BLACKBOX_DIR ?? join(homedir(), '.blackbox');
 const DB_PATH = join(BLACKBOX_DIR, 'blackbox.db');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +37,7 @@ function runMigrations(db: Database.Database): void {
   }
 
   db.exec(schemaSql);
+  runAlterMigrations(db);
 }
 
 function getInlineSchema(): string {
@@ -93,7 +94,18 @@ CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_annotations_session ON annotations(session_id);
 CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id);
+
   `;
+}
+
+function runAlterMigrations(db: Database.Database): void {
+  // Safely add columns that may already exist
+  const migrations = [
+    `ALTER TABLE sessions ADD COLUMN updated_at TEXT`,
+  ];
+  for (const sql of migrations) {
+    try { db.exec(sql); } catch { /* column already exists */ }
+  }
 }
 
 export function closeDb(): void {

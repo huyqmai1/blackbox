@@ -3,6 +3,10 @@ import { getDb } from './db.js';
 
 const GENESIS_VALUE = 'blackbox-genesis';
 
+// In-memory cache for the last hash to avoid timestamp precision issues
+// when multiple items are inserted in rapid succession
+let _lastHashCache: string | null = null;
+
 export function genesisHash(): string {
   return sha256(GENESIS_VALUE);
 }
@@ -47,9 +51,14 @@ export function getLastHash(): string {
 }
 
 export function appendToChain(type: string, timestamp: string, dataJson: string): { hash: string; prevHash: string } {
-  const prevHash = getLastHash();
+  const prevHash = _lastHashCache ?? getLastHash();
   const hash = computeHash(prevHash, type, timestamp, dataJson);
+  _lastHashCache = hash;
   return { hash, prevHash };
+}
+
+export function resetHashCache(): void {
+  _lastHashCache = null;
 }
 
 export function verifyChain(): { valid: boolean; brokenAt?: number; details?: string } {

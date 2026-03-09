@@ -12,6 +12,7 @@ export interface Session {
   ended_at: string | null;
   metadata_json: string | null;
   created_at: string;
+  updated_at: string | null;
 }
 
 export interface SessionWithStats extends Session {
@@ -64,7 +65,6 @@ export function listSessions(params?: {
   limit?: number;
 }): SessionWithStats[] {
   const db = getDb();
-  const limit = params?.limit ?? 20;
 
   let query = `
     SELECT s.*, COUNT(e.id) as event_count
@@ -79,8 +79,12 @@ export function listSessions(params?: {
     args.push(params.since);
   }
 
-  query += ` GROUP BY s.id ORDER BY s.started_at DESC LIMIT ?`;
-  args.push(limit);
+  query += ` GROUP BY s.id ORDER BY s.started_at DESC`;
+
+  if (params?.limit) {
+    query += ` LIMIT ?`;
+    args.push(params.limit);
+  }
 
   return db.prepare(query).all(...args) as SessionWithStats[];
 }
@@ -91,4 +95,11 @@ export function sessionExistsBySourceId(sourceSessionId: string): boolean {
     `SELECT 1 FROM sessions WHERE metadata_json LIKE ?`
   ).get(`%"source_session_id":"${sourceSessionId}"%`);
   return !!row;
+}
+
+export function getSessionBySourceId(sourceSessionId: string): Session | undefined {
+  const db = getDb();
+  return db.prepare(
+    `SELECT * FROM sessions WHERE metadata_json LIKE ?`
+  ).get(`%"source_session_id":"${sourceSessionId}"%`) as Session | undefined;
 }

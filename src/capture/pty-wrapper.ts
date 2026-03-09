@@ -4,11 +4,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSession, endSession } from '../storage/sessions.js';
 import { appendEvent } from '../storage/events.js';
+import { takeSnapshot, diffSnapshots, storeFileChanges, type FileSnapshot, type FileChange } from './file-tracker.js';
+import { renderSessionSummary, promptMicroAnnotation } from '../ui/session-summary.js';
 
 export interface ExecOptions {
   command: string[];
   cwd?: string;
   name?: string;
+  noPrompt?: boolean;
 }
 
 export async function execWithCapture(opts: ExecOptions): Promise<void> {
@@ -48,6 +51,14 @@ export async function execWithCapture(opts: ExecOptions): Promise<void> {
     data: { command: commandStr, cwd, agent, git_branch: gitBranch },
   });
 
+  // Take file snapshot before execution
+  let beforeSnapshot: FileSnapshot | undefined;
+  try {
+    beforeSnapshot = takeSnapshot(cwd);
+  } catch {
+    // Non-fatal: file tracking is best-effort
+  }
+
   const startTime = Date.now();
 
   // Use macOS/Linux `script` command to provide a real PTY to the child
@@ -71,7 +82,7 @@ export async function execWithCapture(opts: ExecOptions): Promise<void> {
       env: process.env,
     });
 
-    child.on('close', (exitCode) => {
+    child.on('close', async (exitCode) => {
       const duration = Date.now() - startTime;
 
       // Read captured output from the log file
@@ -121,7 +132,45 @@ export async function execWithCapture(opts: ExecOptions): Promise<void> {
         });
       }
 
+      // Track file changes
+      let fileChanges: FileChange[] = [];
+      if (beforeSnapshot) {
+        try {
+          const afterSnapshot = takeSnapshot(cwd);
+          fileChanges = diffSnapshots(beforeSnapshot, afterSnapshot, cwd);
+          if (fileChanges.length > 0) {
+            storeFileChanges(session.id, fileChanges);
+            for (const fc of fileChanges) {
+              appendEvent({
+                session_id: session.id,
+                type: 'file_change',
+                data: {
+                  file_path: fc.file_path,
+                  change_type: fc.change_type,
+                  has_diff: !!fc.diff,
+                },
+              });
+            }
+          }
+        } catch {
+          // Non-fatal
+        }
+      }
+
       endSession(session.id);
+
+      // Show session summary and micro-annotation prompt
+      renderSessionSummary({
+        sessionId: session.id,
+        durationMs: duration,
+        exitCode: exitCode ?? null,
+        fileChanges: fileChanges.map(fc => ({ file_path: fc.file_path, change_type: fc.change_type })),
+      });
+
+      if (!opts.noPrompt) {
+        await promptMicroAnnotation(session.id);
+      }
+
       resolve();
     });
 

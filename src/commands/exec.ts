@@ -6,10 +6,12 @@ export const execCommand = new Command('exec')
   .argument('<command...>', 'Command to execute')
   .option('--cwd <dir>', 'Working directory')
   .option('--name <label>', 'Session label')
-  .action(async (command: string[], options: { cwd?: string; name?: string }) => {
+  .option('--no-prompt', 'Skip end-of-session annotation prompt')
+  .action(async (command: string[], options: { cwd?: string; name?: string; prompt: boolean }) => {
     await execWithCapture({
       command,
       cwd: options.cwd,
       name: options.name,
+      noPrompt: !options.prompt,
     });
   });

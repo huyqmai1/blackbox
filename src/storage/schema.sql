@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at TEXT NOT NULL,
   ended_at TEXT,
   metadata_json TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (

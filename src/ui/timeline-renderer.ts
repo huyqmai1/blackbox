@@ -1,6 +1,8 @@
 import chalk from 'chalk';
 import type { Event } from '../storage/events.js';
 import type { Session } from '../storage/sessions.js';
+import type { Annotation } from '../storage/annotations.js';
+import { formatDuration } from '../utils/format.js';
 
 const TYPE_COLORS: Record<string, (s: string) => string> = {
   user_prompt: chalk.blue,
@@ -12,9 +14,9 @@ const TYPE_COLORS: Record<string, (s: string) => string> = {
   session_end: chalk.cyan,
   raw_output: chalk.dim,
   risk_flag: chalk.red,
-  decision_note: chalk.red,
-  override_record: chalk.red,
-  constraint_note: chalk.red,
+  decision_note: chalk.yellow,
+  override_record: chalk.magenta,
+  constraint_note: chalk.blue,
 };
 
 const TYPE_ICONS: Record<string, string> = {
@@ -26,29 +28,59 @@ const TYPE_ICONS: Record<string, string> = {
   session_start: '[',
   session_end: ']',
   raw_output: '#',
+  risk_flag: '!',
+  decision_note: '!',
+  override_record: '!',
+  constraint_note: '!',
 };
 
-export function renderTimeline(events: Event[], options?: { expand?: boolean; sessionMap?: Map<string, Session> }): void {
+export type TimelineItem =
+  | { kind: 'event'; data: Event }
+  | { kind: 'annotation'; data: Annotation };
+
+export function mergeTimeline(events: Event[], annotations: Annotation[]): TimelineItem[] {
+  const items: TimelineItem[] = [
+    ...events.map(e => ({ kind: 'event' as const, data: e })),
+    ...annotations.map(a => ({ kind: 'annotation' as const, data: a })),
+  ];
+  items.sort((a, b) => {
+    const tsA = a.data.timestamp;
+    const tsB = b.data.timestamp;
+    return tsA.localeCompare(tsB);
+  });
+  return items;
+}
+
+export function renderTimeline(
+  items: TimelineItem[],
+  options?: { expand?: boolean; sessionMap?: Map<string, Session> },
+): void {
   const expand = options?.expand ?? false;
   const sessionMap = options?.sessionMap;
   let currentSessionId: string | null = null;
 
-  for (const event of events) {
+  for (const item of items) {
+    const sessionId = item.data.session_id;
+
     // Print session header when session changes
-    if (event.session_id !== currentSessionId) {
-      currentSessionId = event.session_id;
-      const session = sessionMap?.get(currentSessionId);
+    if (sessionId !== currentSessionId) {
+      currentSessionId = sessionId;
+      const session = currentSessionId ? sessionMap?.get(currentSessionId) : undefined;
 
       console.log();
       console.log(chalk.bold.underline(
-        `Session ${currentSessionId.slice(0, 8)}` +
+        `Session ${currentSessionId?.slice(0, 8) ?? 'unknown'}` +
         (session?.agent ? ` (${session.agent})` : '') +
         (session?.cwd ? ` — ${session.cwd}` : '')
       ));
       console.log();
     }
 
-    renderEvent(event, expand);
+    if (item.kind === 'event') {
+      renderEvent(item.data, expand);
+    } else {
+      renderAnnotation(item.data, expand);
+    }
   }
 }
 
@@ -65,6 +97,21 @@ function renderEvent(event: Event, expand: boolean): void {
   );
 }
 
+function renderAnnotation(annotation: Annotation, expand: boolean): void {
+  const colorFn = TYPE_COLORS[annotation.type] ?? chalk.red;
+  const icon = TYPE_ICONS[annotation.type] ?? '!';
+  const time = formatTimestamp(annotation.timestamp);
+  const maxLen = expand ? 500 : 120;
+
+  const content = truncate(annotation.content, maxLen);
+  const tags = annotation.tags_json ? JSON.parse(annotation.tags_json) as string[] : [];
+  const tagStr = tags.length > 0 ? chalk.dim(` [${tags.join(', ')}]`) : '';
+
+  console.log(
+    `  ${chalk.dim(time)}  ${colorFn(icon)} ${colorFn(padType(annotation.type))}  ${content}${tagStr}`
+  );
+}
+
 function formatTimestamp(iso: string): string {
   try {
     const d = new Date(iso);
@@ -75,7 +122,7 @@ function formatTimestamp(iso: string): string {
 }
 
 function padType(type: string): string {
-  return type.padEnd(14);
+  return type.padEnd(16);
 }
 
 function parseData(json: string): Record<string, unknown> {
@@ -104,7 +151,6 @@ function summarizeEvent(type: string, data: Record<string, unknown>, expand: boo
       const input = data.tool_input;
       let inputStr = '';
       if (input && typeof input === 'object') {
-        // Show a brief summary of tool input
         const keys = Object.keys(input as Record<string, unknown>);
         inputStr = ` (${keys.join(', ')})`;
       }
@@ -114,6 +160,12 @@ function summarizeEvent(type: string, data: Record<string, unknown>, expand: boo
       const content = String(data.content ?? '');
       const isError = data.is_error ? chalk.red(' [ERROR]') : '';
       return truncate(content, maxLen) + isError;
+    }
+    case 'file_change': {
+      const filePath = String(data.file_path ?? '');
+      const changeType = String(data.change_type ?? 'modified');
+      const changeIcon = changeType === 'added' ? '+' : changeType === 'deleted' ? '-' : '~';
+      return `${changeIcon} ${filePath}`;
     }
     case 'session_start': {
       const parts: string[] = [];
@@ -141,17 +193,7 @@ function summarizeEvent(type: string, data: Record<string, unknown>, expand: boo
 }
 
 function truncate(s: string, max: number): string {
-  // Remove newlines for display
   const oneLine = s.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
   if (oneLine.length <= max) return oneLine;
   return oneLine.slice(0, max - 3) + '...';
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${minutes}m ${secs}s`;
 }

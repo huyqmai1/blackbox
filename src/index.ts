@@ -4,6 +4,8 @@ import { sessionsCommand } from './commands/sessions.js';
 import { ingestCommand } from './commands/ingest.js';
 import { timelineCommand } from './commands/timeline.js';
 import { statusCommand } from './commands/status.js';
+import { annotateCommand } from './commands/annotate.js';
+import { dashboardCommand } from './commands/dashboard.js';
 import { closeDb } from './storage/db.js';
 
 const program = new Command();
@@ -18,6 +20,8 @@ program.addCommand(sessionsCommand);
 program.addCommand(ingestCommand);
 program.addCommand(timelineCommand);
 program.addCommand(statusCommand);
+program.addCommand(annotateCommand);
+program.addCommand(dashboardCommand);
 
 // Ensure DB is closed on exit
 process.on('exit', () => closeDb());

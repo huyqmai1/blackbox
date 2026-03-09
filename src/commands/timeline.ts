@@ -1,8 +1,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getEvents } from '../storage/events.js';
-import { getSession, listSessions, type Session } from '../storage/sessions.js';
-import { renderTimeline } from '../ui/timeline-renderer.js';
+import { getSession, type Session } from '../storage/sessions.js';
+import { getAnnotations } from '../storage/annotations.js';
+import { renderTimeline, mergeTimeline } from '../ui/timeline-renderer.js';
+import { resolveSessionId } from '../utils/resolve-session.js';
 
 export const timelineCommand = new Command('timeline')
   .description('View the decision timeline')
@@ -40,34 +42,36 @@ export const timelineCommand = new Command('timeline')
       limit: parseInt(options.limit, 10),
     });
 
-    if (events.length === 0) {
+    // Fetch annotations for the relevant sessions
+    const annotations = getAnnotations({
+      session_id: sessionId,
+      since,
+    });
+
+    const items = mergeTimeline(events, annotations);
+
+    if (items.length === 0) {
       console.log(chalk.dim('No events found.'));
       return;
     }
 
     // Build session map for headers
-    const sessionIds = [...new Set(events.map(e => e.session_id))];
+    const sessionIds = [...new Set(items.map(i => i.data.session_id).filter(Boolean))] as string[];
     const sessionMap = new Map<string, Session>();
     for (const sid of sessionIds) {
       const s = getSession(sid);
       if (s) sessionMap.set(sid, s);
     }
 
-    renderTimeline(events, { expand: options.expand, sessionMap });
+    renderTimeline(items, { expand: options.expand, sessionMap });
     console.log();
-    console.log(chalk.dim(`${events.length} event(s) shown.`));
+    const annotationCount = annotations.length;
+    const eventCount = events.length;
+    const parts: string[] = [];
+    if (eventCount > 0) parts.push(`${eventCount} event(s)`);
+    if (annotationCount > 0) parts.push(`${annotationCount} annotation(s)`);
+    console.log(chalk.dim(`${parts.join(', ')} shown.`));
   });
-
-function resolveSessionId(prefix: string): string | undefined {
-  // Try exact match first
-  const exact = getSession(prefix);
-  if (exact) return exact.id;
-
-  // Prefix match
-  const sessions = listSessions({ limit: 100 });
-  const match = sessions.find(s => s.id.startsWith(prefix));
-  return match?.id;
-}
 
 function resolveSince(since?: string): string | undefined {
   if (!since) {
