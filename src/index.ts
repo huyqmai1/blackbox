@@ -6,6 +6,7 @@ import { timelineCommand } from './commands/timeline.js';
 import { statusCommand } from './commands/status.js';
 import { annotateCommand } from './commands/annotate.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { enrichCommand } from './commands/enrich.js';
 import { closeDb } from './storage/db.js';
 
 const program = new Command();
@@ -22,6 +23,7 @@ program.addCommand(timelineCommand);
 program.addCommand(statusCommand);
 program.addCommand(annotateCommand);
 program.addCommand(dashboardCommand);
+program.addCommand(enrichCommand);
 
 // Ensure DB is closed on exit
 process.on('exit', () => closeDb());

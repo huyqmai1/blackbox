@@ -102,6 +102,7 @@ function runAlterMigrations(db: Database.Database): void {
   // Safely add columns that may already exist
   const migrations = [
     `ALTER TABLE sessions ADD COLUMN updated_at TEXT`,
+    `ALTER TABLE sessions ADD COLUMN title TEXT`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

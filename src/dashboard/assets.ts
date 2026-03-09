@@ -877,9 +877,12 @@ export const JS = `
 
       pageItems.forEach(function(s) {
         var project = cleanProjectName(s);
+        var displayTitle = s.title || s.id.substring(0, 8);
         html += '<tr onclick="location.href=\\'/session/' + s.id + '\\'\" style="cursor:pointer">';
-        html += '<td><a class="session-id" href="/session/' + s.id + '">' + escapeHtml(s.id.substring(0, 8)) + '</a>';
-        if (project) html += '<br><small style="color:var(--text-muted)">' + escapeHtml(truncate(project, 40)) + '</small>';
+        html += '<td><a class="session-id" href="/session/' + s.id + '">' + escapeHtml(truncate(displayTitle, 60)) + '</a>';
+        html += '<br><small style="color:var(--text-muted)">' + escapeHtml(s.id.substring(0, 8));
+        if (project) html += ' \\u00B7 ' + escapeHtml(truncate(project, 30));
+        html += '</small>';
         html += '</td>';
         html += '<td>' + escapeHtml(s.agent || s.source || '\\u2014') + '</td>';
         html += '<td>' + formatDate(s.started_at) + '</td>';
@@ -1038,6 +1041,12 @@ export const JS = `
         apiFetch('/api/sessions/' + sessionId + '/files'),
       ]);
       var session = results[0], events = results[1], annotations = results[2], files = results[3];
+
+      // Update page title with session title
+      if (session.title) {
+        var pageH1 = document.querySelector('#session-detail .page-header h1');
+        if (pageH1) pageH1.innerHTML = escapeHtml(session.title) + ' <span style="font-family:var(--font-mono);color:var(--text-muted);font-size:16px">' + escapeHtml(session.id.substring(0, 8)) + '</span>';
+      }
 
       // Sidebar: session info
       var info = document.getElementById('session-info');

@@ -16,6 +16,8 @@ import {
 import { getFileChanges } from '../capture/file-tracker.js';
 import { getDb } from '../storage/db.js';
 import { discoverSessions, parseSession, mapEntryToEvents } from '../ingest/claude-code.js';
+import { enrichSessionTitle } from '../analysis/title-generator.js';
+import { autoAnnotateSession } from '../analysis/auto-annotate.js';
 
 // Shared project name cleaning
 function cleanProjectName(metadataJson: string | null, cwd: string | null): string {
@@ -306,6 +308,10 @@ function runIngest(): { imported: number; skipped: number; updated: number } {
       db.prepare('UPDATE sessions SET ended_at = ?, metadata_json = ?, updated_at = ?, cwd = COALESCE(?, cwd) WHERE id = ?')
         .run(parsed.endedAt, JSON.stringify(updatedMeta), now, parsed.cwd || null, existing.id);
 
+      // Enrich: generate title and auto-annotations
+      enrichSessionTitle(existing.id);
+      autoAnnotateSession(existing.id);
+
       updated++;
       continue;
     }
@@ -361,6 +367,10 @@ function runIngest(): { imported: number; skipped: number; updated: number } {
     });
 
     db.prepare('UPDATE sessions SET ended_at = ?, updated_at = ? WHERE id = ?').run(parsed.endedAt, now, session.id);
+
+    // Enrich: generate title and auto-annotations
+    enrichSessionTitle(session.id);
+    autoAnnotateSession(session.id);
 
     imported++;
   }
