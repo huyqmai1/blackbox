@@ -11,7 +11,8 @@ export const enrichCommand = new Command('enrich')
   .option('--session <id>', 'Enrich a specific session')
   .option('--titles', 'Only generate titles')
   .option('--annotations', 'Only run auto-annotations')
-  .option('--ai', 'Use Claude Code to generate richer titles and annotations')
+  .option('--ai', 'Use AI to generate richer titles and annotations')
+  .option('--model <model>', 'AI model to use (e.g., gpt-4o-mini, claude-haiku-4-5-20251001)')
   .option('--force', 'Re-process sessions that already have titles/annotations')
   .option('--concurrency <n>', 'Max concurrent AI batch calls (default: 3)', '3')
   .option('--batch-size <n>', 'Sessions per AI batch call (default: 10)', '10')
@@ -20,6 +21,7 @@ export const enrichCommand = new Command('enrich')
     titles?: boolean;
     annotations?: boolean;
     ai?: boolean;
+    model?: string;
     force?: boolean;
     concurrency?: string;
     batchSize?: string;
@@ -37,7 +39,7 @@ export const enrichCommand = new Command('enrich')
       if (options.ai) {
         console.log(chalk.dim(`AI enriching session ${sessionId.slice(0, 8)}...`));
         try {
-          const result = await applyAiEnrichment(sessionId);
+          const result = await applyAiEnrichment(sessionId, options.model);
           console.log(`  ${chalk.green('Title:')} ${result.title}`);
           console.log(`  ${chalk.green('Annotations:')} ${result.annotations}`);
         } catch (err) {
@@ -71,6 +73,7 @@ export const enrichCommand = new Command('enrich')
         force: options.force,
         concurrency,
         batchSize,
+        model: options.model,
         onProgress: (done, total, errors) => {
           process.stdout.write(`\r  ${chalk.green(done + '/' + total)} processed, ${chalk.red(errors + '')} errors`);
         },

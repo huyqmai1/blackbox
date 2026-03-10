@@ -30,6 +30,7 @@ body {
   color: var(--text);
   line-height: 1.5;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 a { color: var(--text-link); text-decoration: none; }
@@ -67,7 +68,7 @@ a:hover { text-decoration: underline; }
 .nav a.active { color: var(--text); border-bottom-color: var(--accent); }
 
 /* Layout */
-.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; overflow: hidden; }
 .page-header { margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; font-weight: 600; }
 .page-header p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
@@ -164,7 +165,7 @@ tr:hover td { background: var(--surface-hover); }
 /* Session detail layout */
 .detail-layout {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: 24px;
 }
 @media (max-width: 900px) {
@@ -178,6 +179,8 @@ tr:hover td { background: var(--surface-hover); }
   border-radius: var(--radius);
   padding: 16px;
   margin-bottom: 16px;
+  min-width: 0;
+  overflow: hidden;
 }
 .sidebar-card h3 {
   font-size: 14px;
@@ -202,6 +205,8 @@ tr:hover td { background: var(--surface-hover); }
   border-radius: var(--radius);
   cursor: pointer;
   transition: border-color 0.15s;
+  min-width: 0;
+  overflow: hidden;
 }
 .timeline-item:hover { border-color: #484f58; }
 .timeline-item.expanded { border-color: var(--accent); }
@@ -558,7 +563,7 @@ tr:hover td { background: var(--surface-hover); }
 .ingest-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 10px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -566,9 +571,14 @@ tr:hover td { background: var(--surface-hover); }
   margin-bottom: 16px;
   font-size: 13px;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .ingest-bar:empty { display: none; }
-.ingest-bar .ingest-status { flex: 1; color: var(--text-muted); }
+.ingest-bar .ingest-status { flex: 1 1 auto; min-width: 120px; color: var(--text-muted); }
+.ingest-bar select, .ingest-bar input { max-width: 100%; min-width: 0; }
+.ingest-bar .enrichment-actions { display: flex; gap: 4px; margin-left: auto; flex-shrink: 0; }
 .ingest-bar .ingest-pending { color: var(--warning); font-weight: 500; }
 .ingest-bar .ingest-ok { color: var(--success); }
 .auto-ingest-toggle {
@@ -1067,39 +1077,47 @@ export const JS = `
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     }
 
+    function getSelectedProvider(model) {
+      return model && model.startsWith('claude-') ? 'anthropic' : 'openai';
+    }
+
+    function buildModelSelect(st) {
+      var models = st.supported_models || { anthropic: [], openai: [] };
+      var current = st.model || 'claude-haiku-4-5-20251001';
+      var html = '<select id="model-select" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius);font-size:12px">';
+      html += '<optgroup label="Anthropic">';
+      for (var i = 0; i < models.anthropic.length; i++) {
+        html += '<option value="' + models.anthropic[i] + '"' + (models.anthropic[i] === current ? ' selected' : '') + '>' + models.anthropic[i] + '</option>';
+      }
+      html += '</optgroup><optgroup label="OpenAI">';
+      for (var i = 0; i < models.openai.length; i++) {
+        html += '<option value="' + models.openai[i] + '"' + (models.openai[i] === current ? ' selected' : '') + '>' + models.openai[i] + '</option>';
+      }
+      html += '</optgroup></select>';
+      return html;
+    }
+
+    function buildApiKeyInput(st) {
+      var model = st.model || 'claude-haiku-4-5-20251001';
+      var provider = getSelectedProvider(model);
+      var hasKey = provider === 'anthropic' ? st.has_anthropic_key : st.has_openai_key;
+      if (hasKey) return '';
+      var placeholder = provider === 'anthropic' ? 'sk-ant-...' : 'sk-...';
+      var html = '<input type="password" id="api-key-input" placeholder="' + placeholder + '" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius);font-size:12px;flex:1 1 150px;min-width:120px;max-width:260px">';
+      html += '<button class="btn btn-primary" id="save-api-key-btn">Save Key</button>';
+      return html;
+    }
+
+    function currentModelHasKey(st) {
+      var model = st.model || 'claude-haiku-4-5-20251001';
+      var provider = getSelectedProvider(model);
+      return provider === 'anthropic' ? st.has_anthropic_key : st.has_openai_key;
+    }
+
     async function refresh() {
       try {
         var st = await apiFetch('/api/enrichment/status');
         var html = '<span class="ingest-status">';
-
-        if (!st.has_api_key) {
-          html += '<span style="color:var(--warning)">No API key configured</span></span>';
-          html += '<input type="password" id="api-key-input" placeholder="sk-ant-..." style="margin-left:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius);font-size:12px;width:260px">';
-          html += '<button class="btn btn-primary" id="save-api-key-btn" style="margin-left:4px">Save Key</button>';
-          bar.innerHTML = html;
-
-          var saveBtn = document.getElementById('save-api-key-btn');
-          if (saveBtn) {
-            saveBtn.addEventListener('click', async function() {
-              var input = document.getElementById('api-key-input');
-              var key = input ? input.value.trim() : '';
-              if (!key) return;
-              saveBtn.textContent = 'Saving...';
-              saveBtn.disabled = true;
-              try {
-                var r = await fetch('/api/enrichment/api-key', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ api_key: key }),
-                });
-                var res = await r.json();
-                if (res.error) { alert(res.error); saveBtn.textContent = 'Save Key'; saveBtn.disabled = false; return; }
-                refresh();
-              } catch(e) { alert('Error: ' + e.message); saveBtn.textContent = 'Save Key'; saveBtn.disabled = false; }
-            });
-          }
-          return;
-        }
 
         if (st.running) {
           var prog = st.progress || { done: 0, total: 0, errors: 0 };
@@ -1107,8 +1125,10 @@ export const JS = `
           if (prog.errors > 0) html += ' (' + prog.errors + ' errors)';
           html += '</span>';
           html += '</span>';
-          html += '<span class="enrichment-stats" style="color:var(--text-muted);font-size:12px">' + st.enriched + '/' + st.total + ' enriched</span>';
+          html += buildModelSelect(st);
+          html += '<span style="color:var(--text-muted);font-size:12px">' + st.enriched + '/' + st.total + ' enriched</span>';
           bar.innerHTML = html;
+          bindModelSelect(st);
           if (!pollTimer) pollTimer = setInterval(function() { refresh(); }, 3000);
           return;
         }
@@ -1116,31 +1136,68 @@ export const JS = `
 
         if (st.last_error) {
           html += '<span style="color:var(--danger)">Error: ' + st.last_error + '</span>';
+        } else if (!currentModelHasKey(st)) {
+          var provider = getSelectedProvider(st.model || 'claude-haiku-4-5-20251001');
+          html += '<span style="color:var(--warning)">No ' + provider + ' API key</span>';
         } else if (st.pending > 0) {
           html += '<span style="color:var(--accent)">' + st.pending + ' session(s) need AI enrichment</span>';
         } else {
           html += '<span style="color:var(--success)">All ' + st.enriched + ' sessions AI-enriched</span>';
         }
         html += '</span>';
-        html += '<span style="color:var(--text-muted);font-size:12px;margin-left:8px">' + st.enriched + '/' + st.total + ' enriched</span>';
-        if (st.pending > 0) {
-          html += '<button class="btn btn-primary" id="enrich-all-btn" style="margin-left:auto">Enrich All</button>';
-          html += '<button class="btn" id="enrich-force-btn" style="margin-left:4px">Force All</button>';
-        } else {
-          html += '<button class="btn" id="enrich-force-btn" style="margin-left:auto">Re-enrich All</button>';
+        html += buildModelSelect(st);
+        html += buildApiKeyInput(st);
+        html += '<span style="color:var(--text-muted);font-size:12px">' + st.enriched + '/' + st.total + ' enriched</span>';
+
+        if (currentModelHasKey(st)) {
+          html += '<div class="enrichment-actions">';
+          if (st.pending > 0) {
+            html += '<button class="btn btn-primary" id="enrich-all-btn">Enrich All</button>';
+            html += '<button class="btn" id="enrich-force-btn">Force All</button>';
+          } else {
+            html += '<button class="btn" id="enrich-force-btn">Re-enrich All</button>';
+          }
+          html += '</div>';
         }
         bar.innerHTML = html;
+
+        bindModelSelect(st);
+
+        // Bind API key save
+        var saveBtn = document.getElementById('save-api-key-btn');
+        if (saveBtn) {
+          var provider = getSelectedProvider(st.model || 'claude-haiku-4-5-20251001');
+          saveBtn.addEventListener('click', async function() {
+            var input = document.getElementById('api-key-input');
+            var key = input ? input.value.trim() : '';
+            if (!key) return;
+            saveBtn.textContent = 'Saving...';
+            saveBtn.disabled = true;
+            try {
+              var r = await fetch('/api/enrichment/api-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_key: key, provider: provider }),
+              });
+              var res = await r.json();
+              if (res.error) { alert(res.error); saveBtn.textContent = 'Save Key'; saveBtn.disabled = false; return; }
+              refresh();
+            } catch(e) { alert('Error: ' + e.message); saveBtn.textContent = 'Save Key'; saveBtn.disabled = false; }
+          });
+        }
 
         var enrichBtn = document.getElementById('enrich-all-btn');
         if (enrichBtn) {
           enrichBtn.addEventListener('click', async function() {
             enrichBtn.textContent = 'Starting...';
             enrichBtn.disabled = true;
+            var sel = document.getElementById('model-select');
+            var model = sel ? sel.value : undefined;
             try {
               await fetch('/api/enrichment/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
+                body: JSON.stringify({ model: model }),
               });
               refresh();
             } catch(e) { alert('Error: ' + e.message); }
@@ -1152,11 +1209,13 @@ export const JS = `
           forceBtn.addEventListener('click', async function() {
             forceBtn.textContent = 'Starting...';
             forceBtn.disabled = true;
+            var sel = document.getElementById('model-select');
+            var model = sel ? sel.value : undefined;
             try {
               await fetch('/api/enrichment/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ force: true }),
+                body: JSON.stringify({ force: true, model: model }),
               });
               refresh();
             } catch(e) { alert('Error: ' + e.message); }
@@ -1164,6 +1223,24 @@ export const JS = `
         }
       } catch(e) { bar.innerHTML = ''; }
     }
+
+    function bindModelSelect(st) {
+      var sel = document.getElementById('model-select');
+      if (sel) {
+        sel.addEventListener('change', async function() {
+          var model = sel.value;
+          try {
+            await fetch('/api/enrichment/model', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: model }),
+            });
+            refresh();
+          } catch(e) { /* ignore */ }
+        });
+      }
+    }
+
     refresh();
   }
 

@@ -1,8 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { getEvents } from '../storage/events.js';
 import { getDb } from '../storage/db.js';
 import { createAnnotation, type AnnotationType } from '../storage/annotations.js';
-import { getApiKey } from '../utils/config.js';
+import { getModel, getProviderFromModel, getApiKeyForModel } from '../utils/config.js';
 
 interface AiEnrichResult {
   title: string;
@@ -28,6 +29,7 @@ export interface EnrichAllOptions {
   force?: boolean;
   concurrency?: number;
   batchSize?: number;
+  model?: string;
   onProgress?: (done: number, total: number, errors: number) => void;
 }
 
@@ -86,18 +88,36 @@ export function buildSessionSummary(sessionId: string): string {
   return full;
 }
 
-async function callClaude(prompt: string): Promise<string> {
-  const apiKey = getApiKey();
+async function callLLM(prompt: string, model?: string): Promise<string> {
+  const resolvedModel = model || getModel();
+  const provider = getProviderFromModel(resolvedModel);
+  const apiKey = getApiKeyForModel(resolvedModel);
+
   if (!apiKey) {
-    throw new Error('No Anthropic API key configured. Set ANTHROPIC_API_KEY or run: blackbox config set anthropic_api_key <key>');
+    const envVar = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+    const configKey = provider === 'anthropic' ? 'anthropic_api_key' : 'openai_api_key';
+    throw new Error(`No ${provider} API key configured. Set ${envVar} or run: blackbox config set ${configKey} <key>`);
   }
-  const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 4096,
+
+  if (provider === 'anthropic') {
+    const client = new Anthropic({ apiKey });
+    const response = await client.messages.create({
+      model: resolvedModel,
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    return response.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+  }
+
+  // OpenAI path
+  const client = new OpenAI({ apiKey });
+  const isOSeries = resolvedModel.startsWith('o');
+  const response = await client.chat.completions.create({
+    model: resolvedModel,
     messages: [{ role: 'user', content: prompt }],
+    ...(isOSeries ? { max_completion_tokens: 4096 } : { max_tokens: 4096 }),
   });
-  return response.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+  return response.choices[0]?.message?.content?.trim() ?? '';
 }
 
 function buildBatchPrompt(sessionSummaries: Array<{ id: string; summary: string }>): string {
@@ -135,7 +155,7 @@ export function needsEnrichment(session: { id: string; enriched_at: string | nul
   return lastHash !== session.enriched_hash;
 }
 
-export async function aiEnrichSession(sessionId: string): Promise<AiEnrichResult> {
+export async function aiEnrichSession(sessionId: string, model?: string): Promise<AiEnrichResult> {
   const summary = buildSessionSummary(sessionId);
 
   const prompt = `You are analyzing an AI coding assistant session log. Each event has an ID like [Event #123]. Based on the session data below, return ONLY valid JSON (no markdown, no code fences) with:
@@ -151,21 +171,21 @@ Identify key architectural decisions, risks taken, or notable patterns. Only inc
 Session data:
 ${summary}`;
 
-  const raw = await callClaude(prompt);
+  const raw = await callLLM(prompt, model);
 
   const jsonStr = raw.replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
   const result = JSON.parse(jsonStr) as AiEnrichResult;
   return result;
 }
 
-async function aiEnrichBatch(sessionIds: string[]): Promise<BatchEnrichResult[]> {
+async function aiEnrichBatch(sessionIds: string[], model?: string): Promise<BatchEnrichResult[]> {
   const sessionSummaries = sessionIds.map(id => ({
     id,
     summary: buildSessionSummary(id),
   }));
 
   const prompt = buildBatchPrompt(sessionSummaries);
-  const raw = await callClaude(prompt);
+  const raw = await callLLM(prompt, model);
 
   // Parse JSON — handle potential markdown code fences
   const jsonStr = raw.replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
@@ -178,8 +198,8 @@ async function aiEnrichBatch(sessionIds: string[]): Promise<BatchEnrichResult[]>
   return results;
 }
 
-export async function applyAiEnrichment(sessionId: string): Promise<{ title: string; annotations: number }> {
-  const result = await aiEnrichSession(sessionId);
+export async function applyAiEnrichment(sessionId: string, model?: string): Promise<{ title: string; annotations: number }> {
+  const result = await aiEnrichSession(sessionId, model);
   return applyEnrichmentResult(sessionId, result);
 }
 
@@ -224,7 +244,7 @@ function applyEnrichmentResult(
 }
 
 export async function aiEnrichAll(options: EnrichAllOptions = {}): Promise<{ enriched: number; skipped: number; errors: number }> {
-  const { force = false, concurrency = 3, batchSize = 10, onProgress } = options;
+  const { force = false, concurrency = 3, batchSize = 10, model, onProgress } = options;
   const db = getDb();
 
   // Get all sessions with enrichment state
@@ -256,7 +276,7 @@ export async function aiEnrichAll(options: EnrichAllOptions = {}): Promise<{ enr
     const results = await Promise.allSettled(
       concurrentBatches.map(async (batchIds) => {
         try {
-          const batchResults = await aiEnrichBatch(batchIds);
+          const batchResults = await aiEnrichBatch(batchIds, model);
 
           // Apply results — match by session_id
           for (const batchId of batchIds) {

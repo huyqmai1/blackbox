@@ -19,7 +19,7 @@ import { discoverSessions, parseSession, parseSessionFile, mapEntryToEvents, isE
 import { enrichSessionTitle } from '../analysis/title-generator.js';
 import { autoAnnotateSession } from '../analysis/auto-annotate.js';
 import { aiEnrichAll, applyAiEnrichment, needsEnrichment, getSessionLastHash, type EnrichAllOptions } from '../analysis/ai-enrich.js';
-import { getApiKey, setConfig } from '../utils/config.js';
+import { getApiKey, getOpenAiApiKey, getModel, getProviderFromModel, setConfig, SUPPORTED_MODELS } from '../utils/config.js';
 
 // Shared project name cleaning
 function cleanProjectName(metadataJson: string | null, cwd: string | null): string {
@@ -468,13 +468,18 @@ export function handleEnrichmentStatus(): unknown {
   ).all() as Array<{ id: string; enriched_at: string | null; enriched_hash: string | null }>;
   const pending = sessions.filter(s => needsEnrichment(s, false)).length;
 
+  const currentModel = getModel();
   return {
     total,
     enriched,
     pending,
     running: enrichmentRunning,
     progress: enrichmentProgress,
-    has_api_key: !!getApiKey(),
+    has_api_key: !!getApiKey() || !!getOpenAiApiKey(),
+    has_anthropic_key: !!getApiKey(),
+    has_openai_key: !!getOpenAiApiKey(),
+    model: currentModel,
+    supported_models: SUPPORTED_MODELS,
     last_error: enrichmentLastError,
   };
 }
@@ -483,6 +488,7 @@ export async function handleEnrichAll(body: {
   force?: boolean;
   concurrency?: number;
   batchSize?: number;
+  model?: string;
 }): Promise<unknown> {
   if (enrichmentRunning) {
     return { error: 'Enrichment already running', progress: enrichmentProgress };
@@ -498,6 +504,7 @@ export async function handleEnrichAll(body: {
     force: body.force,
     concurrency: body.concurrency || 3,
     batchSize: body.batchSize || 10,
+    model: body.model,
     onProgress: (done, total, errors) => {
       enrichmentProgress = { done, total, errors };
     },
@@ -512,9 +519,9 @@ export async function handleEnrichAll(body: {
   return { started: true, progress: enrichmentProgress };
 }
 
-export async function handleEnrichSession(sessionId: string): Promise<unknown> {
+export async function handleEnrichSession(sessionId: string, model?: string): Promise<unknown> {
   try {
-    const result = await applyAiEnrichment(sessionId);
+    const result = await applyAiEnrichment(sessionId, model);
     return { success: true, ...result };
   } catch (err) {
     // Fall back to heuristic
@@ -524,13 +531,26 @@ export async function handleEnrichSession(sessionId: string): Promise<unknown> {
   }
 }
 
-export function handleSetApiKey(body: { api_key?: string }): unknown {
+export function handleSetApiKey(body: { api_key?: string; provider?: string }): unknown {
   const key = body.api_key?.trim();
   if (!key || key.length < 10) {
     throw new Error('Invalid API key.');
   }
-  setConfig({ anthropic_api_key: key });
+  if (body.provider === 'openai') {
+    setConfig({ openai_api_key: key });
+  } else {
+    setConfig({ anthropic_api_key: key });
+  }
   return { success: true };
+}
+
+export function handleSetModel(body: { model?: string }): unknown {
+  const model = body.model?.trim();
+  if (!model) {
+    throw new Error('No model specified.');
+  }
+  setConfig({ model });
+  return { success: true, model };
 }
 
 // --- Phase 9: Plans API ---
