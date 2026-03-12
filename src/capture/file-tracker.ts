@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { getDb } from '../storage/db.js';
 
 export interface FileSnapshot {
@@ -80,7 +80,7 @@ export function diffSnapshots(before: FileSnapshot, after: FileSnapshot, cwd: st
 
     let diff: string | null = null;
     try {
-      diff = execSync(`git diff -- "${path}"`, {
+      diff = execFileSync('git', ['diff', '--', path], {
         cwd,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],

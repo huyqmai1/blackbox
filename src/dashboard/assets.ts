@@ -162,6 +162,20 @@ tr:hover td { background: var(--surface-hover); }
 .badge-last-prompt { background: rgba(139,148,158,0.10); color: #8b949e; }
 .badge-plan { background: rgba(188,140,255,0.15); color: #bc8cff; }
 
+/* Agent badges */
+.agent-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.agent-claude-code { background: rgba(210,153,34,0.15); color: #d29922; }
+.agent-openclaw { background: rgba(63,185,80,0.15); color: #3fb950; }
+.agent-unknown { background: rgba(139,148,158,0.15); color: #8b949e; }
+
 /* Session detail layout */
 .detail-layout {
   display: grid;
@@ -844,11 +858,13 @@ export const JS = `
 
     function renderTable() {
       var filterProject = document.getElementById('filter-project').value;
+      var filterAgent = document.getElementById('filter-agent').value;
       var filterTrivial = document.getElementById('filter-trivial').checked;
 
       var filtered = sessionsData.filter(function(s) {
         if (filterTrivial && (s.event_count || 0) <= 2) return false;
         if (filterProject && cleanProjectName(s) !== filterProject) return false;
+        if (filterAgent && (s.agent || '') !== filterAgent) return false;
         return true;
       });
 
@@ -915,7 +931,7 @@ export const JS = `
         if (project) html += ' \\u00B7 ' + escapeHtml(truncate(project, 30));
         html += '</small>';
         html += '</td>';
-        html += '<td>' + escapeHtml(s.agent || s.source || '\\u2014') + '</td>';
+        html += '<td><span class="agent-badge agent-' + escapeHtml(s.agent || 'unknown') + '">' + escapeHtml(s.agent || '\\u2014') + '</span></td>';
         html += '<td>' + formatDate(s.started_at) + '</td>';
         html += '<td>' + (s.ended_at ? formatDate(s.ended_at) : '<span style="color:var(--text-muted)">\\u2014</span>') + '</td>';
         html += '<td>' + formatDuration(s.started_at, s.ended_at) + '</td>';
@@ -966,6 +982,20 @@ export const JS = `
       currentPage = 1;
       try {
         sessionsData = await apiFetch(url);
+        // Populate agent filter
+        var agentSelect = document.getElementById('filter-agent');
+        var agents = {};
+        sessionsData.forEach(function(s) {
+          var agent = s.agent || 'unknown';
+          agents[agent] = (agents[agent] || 0) + 1;
+        });
+        var currentAgentVal = agentSelect.value;
+        agentSelect.innerHTML = '<option value="">All agents (' + sessionsData.length + ')</option>';
+        Object.keys(agents).sort().forEach(function(a) {
+          agentSelect.innerHTML += '<option value="' + escapeHtml(a) + '">' + escapeHtml(a) + ' (' + agents[a] + ')</option>';
+        });
+        if (currentAgentVal) agentSelect.value = currentAgentVal;
+
         // Populate project filter
         var projectSelect = document.getElementById('filter-project');
         var projects = {};
@@ -989,6 +1019,7 @@ export const JS = `
 
     filterForm.addEventListener('submit', function(e) { e.preventDefault(); load(); });
     document.getElementById('filter-limit').addEventListener('change', load);
+    document.getElementById('filter-agent').addEventListener('change', function() { currentPage = 1; renderTable(); });
     document.getElementById('filter-project').addEventListener('change', function() { currentPage = 1; renderTable(); });
     document.getElementById('filter-trivial').addEventListener('change', function() { currentPage = 1; renderTable(); });
     load();
@@ -1595,6 +1626,20 @@ export const JS = `
         html += '<div class="stat-card"><div class="stat-value">' + (stats.total_annotations || 0) + '</div><div class="stat-label">Annotations</div></div>';
         html += '<div class="stat-card"><div class="stat-value">' + (stats.total_file_changes || 0) + '</div><div class="stat-label">File Changes</div></div>';
         html += '</div>';
+
+        if (stats.sessions_by_agent && stats.sessions_by_agent.length) {
+          html += '<h2 class="section-header">Sessions by Agent</h2>';
+          var maxAgent = Math.max.apply(null, stats.sessions_by_agent.map(function(e){return e.count}));
+          html += '<div class="bar-chart">';
+          stats.sessions_by_agent.forEach(function(e) {
+            var pct = maxAgent > 0 ? (e.count / maxAgent * 100) : 0;
+            var name = e.agent || 'unknown';
+            html += '<div class="bar-row"><span class="bar-label"><span class="agent-badge agent-' + escapeHtml(name) + '">' + escapeHtml(name) + '</span></span>';
+            html += '<div class="bar-fill" style="width:' + pct + '%"></div>';
+            html += '<span class="bar-count">' + e.count + '</span></div>';
+          });
+          html += '</div>';
+        }
 
         if (stats.events_by_type && stats.events_by_type.length) {
           html += '<h2 class="section-header">Events by Type</h2>';

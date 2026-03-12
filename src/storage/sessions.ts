@@ -66,6 +66,7 @@ export function getSession(id: string): Session | undefined {
 export function listSessions(params?: {
   since?: string;
   limit?: number;
+  agent?: string;
 }): SessionWithStats[] {
   const db = getDb();
 
@@ -75,11 +76,21 @@ export function listSessions(params?: {
     LEFT JOIN events e ON e.session_id = s.id
   `;
 
+  const conditions: string[] = [];
   const args: unknown[] = [];
 
   if (params?.since) {
-    query += ` WHERE s.started_at >= ?`;
+    conditions.push(`s.started_at >= ?`);
     args.push(params.since);
+  }
+
+  if (params?.agent) {
+    conditions.push(`s.agent = ?`);
+    args.push(params.agent);
+  }
+
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(' AND ')}`;
   }
 
   query += ` GROUP BY s.id ORDER BY s.started_at DESC`;
@@ -92,17 +103,21 @@ export function listSessions(params?: {
   return db.prepare(query).all(...args) as SessionWithStats[];
 }
 
+function escapeLike(str: string): string {
+  return str.replace(/[%_\\]/g, '\\$&');
+}
+
 export function sessionExistsBySourceId(sourceSessionId: string): boolean {
   const db = getDb();
   const row = db.prepare(
-    `SELECT 1 FROM sessions WHERE metadata_json LIKE ?`
-  ).get(`%"source_session_id":"${sourceSessionId}"%`);
+    `SELECT 1 FROM sessions WHERE metadata_json LIKE ? ESCAPE '\\'`
+  ).get(`%"source_session_id":"${escapeLike(sourceSessionId)}"%`);
   return !!row;
 }
 
 export function getSessionBySourceId(sourceSessionId: string): Session | undefined {
   const db = getDb();
   return db.prepare(
-    `SELECT * FROM sessions WHERE metadata_json LIKE ?`
-  ).get(`%"source_session_id":"${sourceSessionId}"%`) as Session | undefined;
+    `SELECT * FROM sessions WHERE metadata_json LIKE ? ESCAPE '\\'`
+  ).get(`%"source_session_id":"${escapeLike(sourceSessionId)}"%`) as Session | undefined;
 }

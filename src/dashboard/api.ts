@@ -15,7 +15,8 @@ import {
 } from '../storage/annotations.js';
 import { getFileChanges } from '../capture/file-tracker.js';
 import { getDb } from '../storage/db.js';
-import { discoverSessions, parseSession, parseSessionFile, mapEntryToEvents, isEnrichmentSession } from '../ingest/claude-code.js';
+import { discoverAllSessions, getAdapter } from '../ingest/registry.js';
+import type { DiscoveredSession } from '../ingest/agent-adapter.js';
 import { enrichSessionTitle } from '../analysis/title-generator.js';
 import { autoAnnotateSession } from '../analysis/auto-annotate.js';
 import { aiEnrichAll, applyAiEnrichment, needsEnrichment, getSessionLastHash, type EnrichAllOptions } from '../analysis/ai-enrich.js';
@@ -44,8 +45,9 @@ export function handleApiSessions(searchParams: URLSearchParams): unknown[] {
   const limitStr = searchParams.get('limit');
   // Empty string means "all sessions" — no limit
   const limit = (limitStr && limitStr.length > 0) ? parseInt(limitStr, 10) : undefined;
+  const agent = searchParams.get('agent') || undefined;
 
-  const sessions = listSessions({ since, limit });
+  const sessions = listSessions({ since, limit, agent });
 
   return sessions.map((s) => ({
     ...s,
@@ -145,6 +147,10 @@ export function handleApiStats(): unknown {
     ORDER BY date ASC
   `).all() as Array<{ date: string; count: number }>;
 
+  const sessionsByAgent = db.prepare(
+    'SELECT agent, COUNT(*) as count FROM sessions GROUP BY agent ORDER BY count DESC'
+  ).all() as Array<{ agent: string | null; count: number }>;
+
   return {
     total_sessions: totalSessions,
     total_events: totalEvents,
@@ -153,6 +159,7 @@ export function handleApiStats(): unknown {
     events_by_type: eventsByType,
     annotations_by_type: annotationsByType,
     daily_activity: dailyActivity,
+    sessions_by_agent: sessionsByAgent,
   };
 }
 
@@ -250,117 +257,42 @@ export function handleApiAnnotations(searchParams: URLSearchParams): unknown[] {
 let autoIngestTimer: ReturnType<typeof setInterval> | null = null;
 let autoIngestIntervalMin = 0;
 
-function runIngest(): { imported: number; skipped: number; updated: number } {
-  const discovered = discoverSessions();
-  let imported = 0;
-  let skipped = 0;
-  let updated = 0;
-  const db = getDb();
+function ingestDiscoveredSession(
+  disc: DiscoveredSession,
+  db: ReturnType<typeof getDb>,
+): 'imported' | 'updated' | 'skipped' {
+  const adapter = getAdapter(disc.agentName);
+  if (!adapter) return 'skipped';
 
-  for (const disc of discovered) {
-    // Skip sessions created by blackbox enrichment (claude -p subprocess calls)
-    if (!getSessionBySourceId(disc.sessionId)) {
-      const entries = parseSessionFile(disc.sessionFile);
-      if (isEnrichmentSession(entries)) {
-        skipped++;
-        continue;
-      }
-    }
+  // Skip internal sessions (e.g., blackbox enrichment sessions)
+  if (!getSessionBySourceId(disc.sourceSessionId) && adapter.isInternalSession) {
+    const parsed = adapter.parseSession(disc);
+    if (adapter.isInternalSession(parsed.entries)) return 'skipped';
+  }
 
-    const existing = getSessionBySourceId(disc.sessionId);
+  const existing = getSessionBySourceId(disc.sourceSessionId);
 
-    if (existing) {
-      // Check if source file has been modified since last import
-      const meta = existing.metadata_json ? JSON.parse(existing.metadata_json) : {};
-      const lastMtime = meta.source_mtime;
-      const currentMtime = disc.mtime.toISOString();
+  if (existing) {
+    // Check if source file has been modified since last import
+    const meta = existing.metadata_json ? JSON.parse(existing.metadata_json) : {};
+    const lastMtime = meta.source_mtime;
+    const currentMtime = disc.mtime.toISOString();
 
-      if (lastMtime && lastMtime >= currentMtime) {
-        skipped++;
-        continue;
-      }
+    if (lastMtime && lastMtime >= currentMtime) return 'skipped';
 
-      // Re-import: delete old annotations, events, and file_changes, then re-parse
-      db.prepare('DELETE FROM annotations WHERE session_id = ?').run(existing.id);
-      db.prepare('DELETE FROM file_changes WHERE session_id = ?').run(existing.id);
-      db.prepare('DELETE FROM events WHERE session_id = ?').run(existing.id);
+    // Re-import: delete old annotations, events, and file_changes, then re-parse
+    db.prepare('DELETE FROM annotations WHERE session_id = ?').run(existing.id);
+    db.prepare('DELETE FROM file_changes WHERE session_id = ?').run(existing.id);
+    db.prepare('DELETE FROM events WHERE session_id = ?').run(existing.id);
 
-      const parsed = parseSession(disc.projectSlug, disc.sessionFile, disc.sessionId);
-
-      appendEvent({
-        session_id: existing.id,
-        type: 'session_start',
-        timestamp: parsed.startedAt,
-        data: {
-          source: 'ingest:claude-code',
-          project_slug: disc.projectSlug,
-          cwd: parsed.cwd,
-          model: parsed.model,
-        },
-      });
-
-      let eventCount = 0;
-      for (const entry of parsed.entries) {
-        const mapped = mapEntryToEvents(entry);
-        for (const evt of mapped) {
-          appendEvent({
-            session_id: existing.id,
-            type: evt.type,
-            timestamp: evt.timestamp,
-            data: evt.data,
-          });
-          eventCount++;
-        }
-      }
-
-      appendEvent({
-        session_id: existing.id,
-        type: 'session_end',
-        timestamp: parsed.endedAt,
-        data: { event_count: eventCount, source: 'ingest:claude-code' },
-      });
-
-      // Update session metadata with new mtime and timestamps
-      const updatedMeta = {
-        ...meta,
-        source_mtime: currentMtime,
-        model: parsed.model || meta.model,
-      };
-      const now = new Date().toISOString();
-      db.prepare('UPDATE sessions SET ended_at = ?, metadata_json = ?, updated_at = ?, cwd = COALESCE(?, cwd) WHERE id = ?')
-        .run(parsed.endedAt, JSON.stringify(updatedMeta), now, parsed.cwd || null, existing.id);
-
-      // Enrich: generate title and auto-annotations
-      enrichSessionTitle(existing.id);
-      autoAnnotateSession(existing.id);
-
-      updated++;
-      continue;
-    }
-
-    const parsed = parseSession(disc.projectSlug, disc.sessionFile, disc.sessionId);
-    const now = new Date().toISOString();
-
-    const session = createSession({
-      source: 'ingest:claude-code',
-      agent: 'claude-code',
-      cwd: parsed.cwd,
-      started_at: parsed.startedAt,
-      metadata_json: JSON.stringify({
-        source_session_id: disc.sessionId,
-        project_slug: disc.projectSlug,
-        model: parsed.model,
-        source_file: disc.sessionFile,
-        source_mtime: disc.mtime.toISOString(),
-      }),
-    });
+    const parsed = adapter.parseSession(disc);
 
     appendEvent({
-      session_id: session.id,
+      session_id: existing.id,
       type: 'session_start',
       timestamp: parsed.startedAt,
       data: {
-        source: 'ingest:claude-code',
+        source: `ingest:${disc.agentName}`,
         project_slug: disc.projectSlug,
         cwd: parsed.cwd,
         model: parsed.model,
@@ -369,10 +301,10 @@ function runIngest(): { imported: number; skipped: number; updated: number } {
 
     let eventCount = 0;
     for (const entry of parsed.entries) {
-      const mapped = mapEntryToEvents(entry);
+      const mapped = adapter.mapEntryToEvents(entry);
       for (const evt of mapped) {
         appendEvent({
-          session_id: session.id,
+          session_id: existing.id,
           type: evt.type,
           timestamp: evt.timestamp,
           data: evt.data,
@@ -382,43 +314,139 @@ function runIngest(): { imported: number; skipped: number; updated: number } {
     }
 
     appendEvent({
-      session_id: session.id,
+      session_id: existing.id,
       type: 'session_end',
       timestamp: parsed.endedAt,
-      data: { event_count: eventCount, source: 'ingest:claude-code' },
+      data: { event_count: eventCount, source: `ingest:${disc.agentName}` },
     });
 
-    db.prepare('UPDATE sessions SET ended_at = ?, updated_at = ? WHERE id = ?').run(parsed.endedAt, now, session.id);
+    // Update session metadata with new mtime and timestamps
+    const updatedMeta = {
+      ...meta,
+      source_mtime: currentMtime,
+      model: parsed.model || meta.model,
+    };
+    const now = new Date().toISOString();
+    db.prepare('UPDATE sessions SET ended_at = ?, metadata_json = ?, updated_at = ?, cwd = COALESCE(?, cwd) WHERE id = ?')
+      .run(parsed.endedAt, JSON.stringify(updatedMeta), now, parsed.cwd || null, existing.id);
 
     // Enrich: generate title and auto-annotations
-    enrichSessionTitle(session.id);
-    autoAnnotateSession(session.id);
+    enrichSessionTitle(existing.id);
+    autoAnnotateSession(existing.id);
 
-    imported++;
+    return 'updated';
+  }
+
+  const parsed = adapter.parseSession(disc);
+  const now = new Date().toISOString();
+
+  const session = createSession({
+    source: `ingest:${disc.agentName}`,
+    agent: disc.agentName,
+    cwd: parsed.cwd,
+    started_at: parsed.startedAt,
+    metadata_json: JSON.stringify({
+      source_session_id: disc.sourceSessionId,
+      project_slug: disc.projectSlug,
+      model: parsed.model,
+      source_file: disc.sessionFile,
+      source_mtime: disc.mtime.toISOString(),
+    }),
+  });
+
+  appendEvent({
+    session_id: session.id,
+    type: 'session_start',
+    timestamp: parsed.startedAt,
+    data: {
+      source: `ingest:${disc.agentName}`,
+      project_slug: disc.projectSlug,
+      cwd: parsed.cwd,
+      model: parsed.model,
+    },
+  });
+
+  let eventCount = 0;
+  for (const entry of parsed.entries) {
+    const mapped = adapter.mapEntryToEvents(entry);
+    for (const evt of mapped) {
+      appendEvent({
+        session_id: session.id,
+        type: evt.type,
+        timestamp: evt.timestamp,
+        data: evt.data,
+      });
+      eventCount++;
+    }
+  }
+
+  appendEvent({
+    session_id: session.id,
+    type: 'session_end',
+    timestamp: parsed.endedAt,
+    data: { event_count: eventCount, source: `ingest:${disc.agentName}` },
+  });
+
+  db.prepare('UPDATE sessions SET ended_at = ?, updated_at = ? WHERE id = ?').run(parsed.endedAt, now, session.id);
+
+  // Enrich: generate title and auto-annotations
+  enrichSessionTitle(session.id);
+  autoAnnotateSession(session.id);
+
+  return 'imported';
+}
+
+function runIngest(): { imported: number; skipped: number; updated: number } {
+  const discovered = discoverAllSessions();
+  let imported = 0;
+  let skipped = 0;
+  let updated = 0;
+  const db = getDb();
+
+  for (const disc of discovered) {
+    const result = ingestDiscoveredSession(disc, db);
+    if (result === 'imported') imported++;
+    else if (result === 'updated') updated++;
+    else skipped++;
   }
 
   return { imported, skipped, updated };
 }
 
 export function handleIngestStatus(): unknown {
-  const discovered = discoverSessions();
+  const discovered = discoverAllSessions();
   let alreadyImported = 0;
   let filtered = 0;
+  const byAgent: Record<string, { discovered: number; imported: number; pending: number }> = {};
+
   for (const disc of discovered) {
-    if (sessionExistsBySourceId(disc.sessionId)) {
+    // Initialize per-agent counters
+    if (!byAgent[disc.agentName]) {
+      byAgent[disc.agentName] = { discovered: 0, imported: 0, pending: 0 };
+    }
+    byAgent[disc.agentName].discovered++;
+
+    if (sessionExistsBySourceId(disc.sourceSessionId)) {
       alreadyImported++;
+      byAgent[disc.agentName].imported++;
     } else {
-      // Check if this would be skipped by the enrichment filter
-      try {
-        const entries = parseSessionFile(disc.sessionFile);
-        if (isEnrichmentSession(entries)) filtered++;
-      } catch { filtered++; }
+      // Check if this would be skipped by the internal session filter
+      const adapter = getAdapter(disc.agentName);
+      if (adapter?.isInternalSession) {
+        try {
+          const parsed = adapter.parseSession(disc);
+          if (adapter.isInternalSession(parsed.entries)) { filtered++; continue; }
+        } catch { filtered++; continue; }
+      }
+      byAgent[disc.agentName].pending++;
     }
   }
+
   return {
     total_discovered: discovered.length,
     already_imported: alreadyImported,
     pending: discovered.length - alreadyImported - filtered,
+    by_agent: byAgent,
     auto_ingest: autoIngestTimer !== null,
     auto_ingest_interval_min: autoIngestIntervalMin,
   };
@@ -440,7 +468,7 @@ export function handleAutoIngest(body: { enabled?: boolean; interval_minutes?: n
     const minutes = body.interval_minutes || 5;
     autoIngestIntervalMin = minutes;
     autoIngestTimer = setInterval(() => {
-      try { runIngest(); } catch { /* ignore */ }
+      try { runIngest(); } catch (e) { console.warn('Auto-ingest failed:', e instanceof Error ? e.message : String(e)); }
     }, minutes * 60 * 1000);
     // Run immediately on enable
     const result = runIngest();
@@ -514,6 +542,7 @@ export async function handleEnrichAll(body: {
   }).catch((err) => {
     enrichmentRunning = false;
     enrichmentLastError = err instanceof Error ? err.message : String(err);
+    console.error('Enrichment failed:', enrichmentLastError);
   });
 
   return { started: true, progress: enrichmentProgress };
@@ -582,9 +611,10 @@ export function handleApiPlans(): unknown[] {
     // Try to find which session wrote this plan file
     let sessionId: string | null = null;
     let projectName = '';
+    const escapedName = name.replace(/[%_\\]/g, '\\$&');
     const row = db.prepare(
-      `SELECT e.session_id FROM events e WHERE e.type = 'tool_use' AND e.data_json LIKE ? LIMIT 1`
-    ).get(`%.claude/plans/${name}.md%`) as { session_id: string } | undefined;
+      `SELECT e.session_id FROM events e WHERE e.type = 'tool_use' AND e.data_json LIKE ? ESCAPE '\\' LIMIT 1`
+    ).get(`%.claude/plans/${escapedName}.md%`) as { session_id: string } | undefined;
     if (row) {
       sessionId = row.session_id;
       const session = getSession(row.session_id);
@@ -623,9 +653,10 @@ export function handleApiPlan(name: string): unknown {
   let sessionId: string | null = null;
   let projectName = '';
   const planName = basename(safeName, '.md');
+  const escapedPlanName = planName.replace(/[%_\\]/g, '\\$&');
   const row = db.prepare(
-    `SELECT e.session_id FROM events e WHERE e.type = 'tool_use' AND e.data_json LIKE ? LIMIT 1`
-  ).get(`%.claude/plans/${planName}.md%`) as { session_id: string } | undefined;
+    `SELECT e.session_id FROM events e WHERE e.type = 'tool_use' AND e.data_json LIKE ? ESCAPE '\\' LIMIT 1`
+  ).get(`%.claude/plans/${escapedPlanName}.md%`) as { session_id: string } | undefined;
   if (row) {
     sessionId = row.session_id;
     const session = getSession(row.session_id);

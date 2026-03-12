@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
+import type { AgentAdapter, DiscoveredSession, ParsedSession as AdapterParsedSession, MappedEvent as AdapterMappedEvent } from './agent-adapter.js';
 
 export interface ClaudeCodeEntry {
   type: string;
@@ -282,3 +283,32 @@ function extractTextContent(content: unknown): string | null {
   }
   return null;
 }
+
+// --- Agent Adapter ---
+
+export const claudeCodeAdapter: AgentAdapter = {
+  name: 'claude-code',
+  displayName: 'Claude Code',
+
+  discoverSessions(since?: string): DiscoveredSession[] {
+    return discoverSessions(since).map(s => ({
+      agentName: 'claude-code',
+      sourceSessionId: s.sessionId,
+      sessionFile: s.sessionFile,
+      projectSlug: s.projectSlug,
+      mtime: s.mtime,
+    }));
+  },
+
+  parseSession(discovered: DiscoveredSession): AdapterParsedSession {
+    return parseSession(discovered.projectSlug, discovered.sessionFile, discovered.sourceSessionId);
+  },
+
+  mapEntryToEvents(entry: unknown): AdapterMappedEvent[] {
+    return mapEntryToEvents(entry as ClaudeCodeEntry);
+  },
+
+  isInternalSession(entries: unknown[]): boolean {
+    return isEnrichmentSession(entries as ClaudeCodeEntry[]);
+  },
+};

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSession, endSession } from '../storage/sessions.js';
@@ -95,8 +95,8 @@ export async function execWithCapture(opts: ExecOptions): Promise<void> {
         // Log file may not exist if process was killed immediately
       }
 
-      // Clean up temp file
-      try { unlinkSync(logFile); } catch { /* ignore */ }
+      // Clean up temp directory
+      try { rmSync(logDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
       const truncatedOutput = rawOutput.length > 100_000
         ? rawOutput.slice(0, 100_000) + '\n... [truncated]'

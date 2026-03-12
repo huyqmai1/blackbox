@@ -32,11 +32,12 @@ const dangerousCommandRule: AnnotationRule = {
       { re: /git\s+clean\s+-[^\s]*f/i, label: 'git clean -f' },
     ];
 
+    const SHELL_TOOLS = new Set(['Bash', 'bash', 'shell', 'Shell', 'terminal', 'Terminal', 'execute', 'exec', 'run_command']);
     for (const ev of events) {
       if (ev.type !== 'tool_use') continue;
       try {
         const data = JSON.parse(ev.data_json);
-        if (data.tool_name !== 'Bash') continue;
+        if (!SHELL_TOOLS.has(data.tool_name)) continue;
         const cmd = String(data.tool_input?.command || '');
         for (const p of patterns) {
           if (p.re.test(cmd)) {

@@ -2,7 +2,7 @@
 // Uses node:http with a simple URL pattern router
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { exec } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { CSS, JS } from './assets.js';
 import {
   sessionsListPage, sessionDetailPage, searchPage, statsPage,
@@ -272,7 +272,9 @@ export function startServer(port: number, open: boolean): void {
 
     if (open) {
       const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-      exec(`${cmd} ${url}`);
+      execFile(cmd, [url], (err) => {
+        if (err) console.warn('Failed to open browser:', err.message);
+      });
     }
   });
 }

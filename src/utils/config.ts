@@ -2,7 +2,18 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const BLACKBOX_DIR = process.env.BLACKBOX_DIR ?? join(homedir(), '.blackbox');
+function resolveBlackboxDir(): string {
+  const dir = process.env.BLACKBOX_DIR ?? join(homedir(), '.blackbox');
+  const home = homedir();
+  // Validate that BLACKBOX_DIR is within the user's home directory or /tmp
+  if (!dir.startsWith(home) && !dir.startsWith('/tmp')) {
+    console.warn(`BLACKBOX_DIR "${dir}" is outside home directory, falling back to ~/.blackbox`);
+    return join(home, '.blackbox');
+  }
+  return dir;
+}
+
+const BLACKBOX_DIR = resolveBlackboxDir();
 const CONFIG_PATH = join(BLACKBOX_DIR, 'config.json');
 
 interface BlackboxConfig {

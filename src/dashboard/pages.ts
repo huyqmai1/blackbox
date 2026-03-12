@@ -41,6 +41,7 @@ export function sessionsListPage(): string {
     <div id="enrichment-bar" class="ingest-bar"></div>
     <form id="sessions-filter" class="filters">
       <input type="date" id="filter-since" placeholder="Since date">
+      <select id="filter-agent"><option value="">All agents</option></select>
       <select id="filter-project"><option value="">All projects</option></select>
       <select id="filter-limit">
         <option value="">All sessions</option>

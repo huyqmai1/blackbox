@@ -34,6 +34,11 @@ process.on('SIGINT', () => {
   process.exit(130);
 });
 
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+  process.exit(1);
+});
+
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);
   process.exit(1);

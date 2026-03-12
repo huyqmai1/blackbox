@@ -40,11 +40,12 @@ export function buildSessionSummary(sessionId: string): string {
   // Session metadata
   const db = getDb();
   const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as {
-    cwd: string | null; metadata_json: string | null; started_at: string; ended_at: string | null;
+    cwd: string | null; metadata_json: string | null; started_at: string; ended_at: string | null; agent: string | null;
   } | undefined;
 
   if (session) {
     const meta = session.metadata_json ? JSON.parse(session.metadata_json) : {};
+    if (session.agent) parts.push(`Agent: ${session.agent}`);
     parts.push(`Project: ${meta.project_slug || session.cwd || 'unknown'}`);
     parts.push(`Started: ${session.started_at}`);
     if (session.ended_at) parts.push(`Ended: ${session.ended_at}`);
@@ -79,7 +80,7 @@ export function buildSessionSummary(sessionId: string): string {
           parts.push(`[Event #${ev.id}] [Error] ${String(data.content || '').slice(0, 200)}`);
         }
       }
-    } catch { /* skip */ }
+    } catch (e) { console.warn(`Skipped event in session summary:`, e instanceof Error ? e.message : String(e)); }
   }
 
   // Trim to reasonable size for Claude context
@@ -174,7 +175,12 @@ ${summary}`;
   const raw = await callLLM(prompt, model);
 
   const jsonStr = raw.replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
-  const result = JSON.parse(jsonStr) as AiEnrichResult;
+  let result: AiEnrichResult;
+  try {
+    result = JSON.parse(jsonStr) as AiEnrichResult;
+  } catch (e) {
+    throw new Error(`Failed to parse LLM response as JSON: ${e instanceof Error ? e.message : String(e)}\nRaw response: ${raw.slice(0, 500)}`);
+  }
   return result;
 }
 
@@ -189,7 +195,12 @@ async function aiEnrichBatch(sessionIds: string[], model?: string): Promise<Batc
 
   // Parse JSON — handle potential markdown code fences
   const jsonStr = raw.replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
-  const results = JSON.parse(jsonStr) as BatchEnrichResult[];
+  let results: BatchEnrichResult[];
+  try {
+    results = JSON.parse(jsonStr) as BatchEnrichResult[];
+  } catch (e) {
+    throw new Error(`Failed to parse batch LLM response as JSON: ${e instanceof Error ? e.message : String(e)}\nRaw response: ${raw.slice(0, 500)}`);
+  }
 
   if (!Array.isArray(results)) {
     throw new Error('Expected JSON array from batch response');
