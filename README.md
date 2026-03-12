@@ -18,8 +18,12 @@ npm link   # makes `blackbox` available globally
 ## Quick Start
 
 ```bash
-# Import your Claude Code sessions
+# Import sessions from all supported agents (Claude Code, OpenClaw)
 blackbox ingest
+
+# Import from a specific agent only
+blackbox ingest --source claude-code
+blackbox ingest --source openclaw
 
 # Launch the web dashboard
 blackbox dashboard
@@ -43,18 +47,26 @@ Every event and annotation is cryptographically hash-chained: each record includ
 
 ### Ingest Pipeline
 
-BlackBox discovers Claude Code session logs from `~/.claude/projects/<project>/<session-id>.jsonl` and transforms them into structured data:
+BlackBox uses a pluggable adapter architecture to ingest sessions from multiple AI agents. Each adapter implements discovery, parsing, and event mapping for a specific agent.
 
-1. **Discovery** — Scans the Claude projects directory for `.jsonl` files, optionally filtered by modification time
-2. **Parsing** — Reads each JSONL file line by line, mapping Claude Code entry types to BlackBox events:
-   - `user` entries → `user_prompt` events
-   - `assistant` entries → `ai_response` + `tool_use` + `tool_result` events (one per content block)
-   - Noisy internal types (`queue-operation`, `lock_acquired`, `progress`, etc.) are skipped
+**Supported agents:**
+
+| Agent | Session location | Adapter |
+|-------|-----------------|---------|
+| **Claude Code** | `~/.claude/projects/<project>/<session-id>.jsonl` | Built-in |
+| **OpenClaw** | `~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl` | Built-in |
+
+**Ingest flow:**
+
+1. **Discovery** — Each adapter scans its agent's session directory for `.jsonl` files, optionally filtered by modification time
+2. **Parsing** — Reads each JSONL file line by line, mapping agent-specific entry types to unified BlackBox events:
+   - **Claude Code**: `user` → `user_prompt`, `assistant` → `ai_response` + `tool_use` + `tool_result`
+   - **OpenClaw**: `message` entries with role-based mapping (`user`, `assistant`, `toolResult`), plus `session` headers and `session_info` entries
 3. **Session creation** — Extracts metadata (project slug, working directory, model, timestamps) and creates a session record
 4. **Enrichment on import** — Automatically runs heuristic title generation and auto-annotation rules on each imported session
 5. **Deduplication** — Tracks sessions by source ID to avoid re-importing; modified sessions are re-imported with updated events
 
-The ingest pipeline also filters out "enrichment sessions" — JSONL files created by BlackBox's own AI enrichment calls — to prevent feedback loops.
+The ingest pipeline also filters out "enrichment sessions" — JSONL files created by BlackBox's own AI enrichment calls — to prevent feedback loops. OpenClaw internal types (compaction, model changes, branch summaries, etc.) are automatically skipped.
 
 ### Enrichment
 
@@ -68,8 +80,8 @@ BlackBox has a two-tier enrichment system for adding context to sessions:
   - Large batch edits (10+ files modified in one session)
   - Plan execution (detects plan titles in opening prompts)
 
-**AI enrichment** (requires Anthropic API key):
-- Uses Claude Haiku to analyze session transcripts
+**AI enrichment** (requires Anthropic or OpenAI API key):
+- Uses Claude Haiku or GPT-4o-mini to analyze session transcripts
 - Generates descriptive titles (3-8 words), summaries, and annotations referencing specific events
 - Annotations identify architectural decisions, risks taken, and notable patterns
 - Batch mode: sends multiple sessions in one API call for efficiency
@@ -91,7 +103,7 @@ The `exec` command wraps any AI agent command in a PTY (pseudo-terminal) to capt
 A zero-dependency HTTP server (`node:http`) with embedded HTML, CSS, and JavaScript. No build step, no framework — just `blackbox dashboard`.
 
 **Pages:**
-- **Sessions** — Filterable, sortable list of all sessions with event counts and titles
+- **Sessions** — Filterable list of all sessions with event counts, titles, and agent badges (filterable by agent)
 - **Session Detail** — Full event timeline with expandable content, inline annotations (including AI-generated flags on specific events), file changes sidebar, and manual annotation form
 - **Projects** — Sessions grouped by project with aggregated stats (session count, events, total duration)
 - **Plans** — Claude Code implementation plans discovered from `~/.claude/plans/`, linked to their source sessions
@@ -100,7 +112,7 @@ A zero-dependency HTTP server (`node:http`) with embedded HTML, CSS, and JavaScr
 - **Annotations** — Browse all annotations with type filtering
 
 **Dashboard controls:**
-- **Sync** — Import/re-import sessions from Claude Code on demand, with auto-sync scheduling (configurable interval)
+- **Sync** — Import/re-import sessions from all agents on demand, with auto-sync scheduling (configurable interval)
 - **AI Enrichment** — Enrich All, Force All (re-enrich everything), or enrich individual sessions. Shows progress, error messages, and API key input when no key is configured
 
 ## CLI Reference
@@ -124,7 +136,9 @@ blackbox status                            # Most recent session
 blackbox status --session <id>             # Specific session
 
 # Import
-blackbox ingest                            # Import all Claude Code sessions
+blackbox ingest                            # Import from all agents
+blackbox ingest --source claude-code       # Import from Claude Code only
+blackbox ingest --source openclaw          # Import from OpenClaw only
 blackbox ingest --since 2025-01-01         # Import sessions after date
 blackbox ingest --session <id>             # Import specific session
 blackbox ingest --all                      # Force re-import all
@@ -148,6 +162,8 @@ blackbox exec --cwd /path/to/project -- claude-code
 
 # Configuration
 blackbox config set anthropic_api_key sk-ant-...
+blackbox config set openai_api_key sk-...
+blackbox config set model gpt-4o-mini      # Switch AI enrichment model
 blackbox config get anthropic_api_key
 
 # Dashboard
@@ -158,9 +174,13 @@ blackbox dashboard --no-open               # Don't auto-open browser
 
 ## Configuration
 
-BlackBox stores configuration in `~/.blackbox/config.json`. Currently used for:
+BlackBox stores configuration in `~/.blackbox/config.json`:
 
-- `anthropic_api_key` — API key for AI enrichment (alternatively, set `ANTHROPIC_API_KEY` environment variable)
+- `anthropic_api_key` — Anthropic API key for AI enrichment (or set `ANTHROPIC_API_KEY` env var)
+- `openai_api_key` — OpenAI API key for AI enrichment (or set `OPENAI_API_KEY` env var)
+- `model` — AI model for enrichment (default: `claude-haiku-4-5-20251001`). Supported models:
+  - **Anthropic**: `claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514`, `claude-opus-4-20250514`
+  - **OpenAI**: `gpt-4o-mini`, `gpt-4o`, `o3-mini`
 
 ## Development
 
@@ -177,7 +197,7 @@ npm run build                      # Production build (tsup)
 src/
   commands/       CLI command definitions (commander.js)
   storage/        SQLite schema, event/annotation/file_change persistence, hash chain
-  ingest/         Claude Code JSONL discovery, parsing, session import
+  ingest/         Agent adapters (Claude Code, OpenClaw), registry, session import
   analysis/       Title generation, auto-annotation rules, AI enrichment
   capture/        PTY wrapper for live session capture, file tracking
   dashboard/      HTTP server, API handlers, page templates, embedded assets
@@ -188,6 +208,7 @@ src/
 
 - `better-sqlite3` — Synchronous SQLite driver
 - `@anthropic-ai/sdk` — Claude API for AI enrichment
+- `openai` — OpenAI API for AI enrichment
 - `commander` — CLI argument parsing
 - `chalk` — Terminal colors
 - `cli-table3` — ASCII table formatting
